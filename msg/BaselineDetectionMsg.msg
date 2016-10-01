@@ -1,0 +1,3 @@
+geometry_msgs/Point[] baseline
+sensor_msgs/JointState ptu_state
+strands_navigation_msgs/TopologicalNode topological_node
