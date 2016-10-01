@@ -65,9 +65,7 @@ class ChangeDetector(object):
 
     def _depth_cb(self, msg):
         self._depth = [
-            point for point in read_points(
-                msg, field_names=("x", "y", "z")
-            )
+            point for point in read_points(msg, field_names=("x", "y", "z"))
         ]
         if self._is_learning and not self._has_learnt:
             self._depths.append(self._depth)
@@ -137,7 +135,7 @@ class ChangeDetector(object):
                 baseline = np.array(base)
                 continue
             baseline = baseline + np.array(base)
-        baseline = baseline / float(len(self._depth))
+        baseline = baseline / float(len(base))
         self._baseline[goal.topological_node] = baseline
         self._ptu_info[goal.topological_node] = self.ptu
         baseline = self._array_to_point(baseline)
