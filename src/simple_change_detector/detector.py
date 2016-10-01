@@ -4,6 +4,7 @@ import copy
 import math
 import rospy
 import argparse
+import threading
 import actionlib
 import numpy as np
 from std_msgs.msg import Header
@@ -12,23 +13,29 @@ from sensor_msgs.point_cloud2 import read_points
 from sensor_msgs.msg import PointCloud2, JointState
 from strands_navigation_msgs.msg import TopologicalMap
 from mongodb_store.message_store import MessageStoreProxy
+from simple_change_detector.msg import ChangeDetectionAction
+from simple_change_detector.msg import ChangeDetectionResult
 from simple_change_detector.msg import BaselineDetectionMsg, ChangeDetectionMsg
-from simple_change_detector.msg import ChangeDetectionAction, ChangeDetectionResult
 
 
 class ChangeDetector(object):
 
-    def __init__(self, depth_topic="/head_xtion/depth/points", num_obs=50):
-        rospy.loginfo("Initialising change detector...")
+    def __init__(
+        self, depth_topic="/head_xtion/depth/points", num_obs=50, threshold=0.05
+    ):
+        rospy.loginfo(
+            "Initialising change detector with num observation %d and threshold %.2f..." % (
+                num_obs, threshold
+            )
+        )
+        self.threshold = threshold
         self._counter = 0
         self.num_of_obs = num_obs
         self._baseline = dict()
+        self._lock = threading.Lock()
 
         rospy.loginfo("Subscribing to %s" % depth_topic)
         self._depth = None
-        self._depths = list()
-        self._is_learning = False
-        self._has_learnt = False
         rospy.Subscriber(depth_topic, PointCloud2, self._depth_cb, None, 10)
 
         self.topo_map = None
@@ -64,13 +71,12 @@ class ChangeDetector(object):
         self.topo_map = msg
 
     def _depth_cb(self, msg):
+        self._lock.acquire()
         self._depth = [
             point for point in read_points(msg, field_names=("x", "y", "z"))
         ]
-        if self._is_learning and not self._has_learnt:
-            self._depths.append(self._depth)
-            rospy.loginfo("Learning %d observation(s)..." % len(self._depths))
         rospy.sleep(0.1)
+        self._lock.release()
 
     def _get_topo_info(self):
         topo_sub = rospy.Subscriber(
@@ -102,7 +108,7 @@ class ChangeDetector(object):
         query = {"topological_node.map": wp.map}
         logs = self._db.query(BaselineDetectionMsg._type, query, {})
         if len(logs) > 0:
-            self._has_learnt = True
+            rospy.loginfo("%d entries are being obtained..." % len(logs))
             for log in logs:
                 self._baseline[
                     log[0].topological_node.name
@@ -114,71 +120,76 @@ class ChangeDetector(object):
                     log[0].topological_node.name
                 ] = log[0].topological_node
 
-    def _learning(self, goal, start):
-        assert len(self._depths) == 0, "len:%d (len should be 0)" % (
-            len(self._depths)
-        )
-        self._is_learning = True
-        while len(self._depths) < self.num_of_obs:
-            if self.server.is_preempt_requested():
-                self._is_learning = False
-                self._depths = list()
-                return
-            rospy.sleep(0.1)
-        self._is_learning = False
+    def _learning(self, goal):
         baseline = list()
-        for base in self._depths:
-            if self.server.is_preempt_requested():
-                self._depths = list()
-                return
+        for i in range(0, self.num_of_obs):
+            self._lock.acquire()
+            base = copy.deepcopy(self._depth)
+            self._lock.release()
+            if self.server.is_preempt_requested() or rospy.is_shutdown():
+                return True
             if baseline == list():
                 baseline = np.array(base)
-                continue
-            baseline = baseline + np.array(base)
-        baseline = baseline / float(len(base))
+            else:
+                baseline = baseline + np.array(base)
+            rospy.loginfo("Learning %d observation(s)..." % (i+1))
+            rospy.sleep(0.1)
+        baseline = baseline / float(self.num_of_obs)
         self._baseline[goal.topological_node] = baseline
         self._ptu_info[goal.topological_node] = self.ptu
-        baseline = self._array_to_point(baseline)
         self._db.insert(
             BaselineDetectionMsg(
-                baseline,
+                self._array_to_point(baseline),
                 self._ptu_info[goal.topological_node],
                 self._topo_info[goal.topological_node]
             ), {}
         )
-        self._depths = list()
+        return False
 
     def execute(self, goal):
-        # print msg.height, msg.width
-        # 480 640
-        # print msg.is_bigendian, msg.point_step, msg.row_step, msg.is_dense
-        # False, 16, 10240, False
-        # print len(msg.data)
-        # 4915200
         start = rospy.Time.now()
-        if goal.is_learning and not self._has_learnt:
-            self._learning(goal, start)
-        elif not goal.is_learning:
-            self._predicting(goal, start)
-        return ChangeDetectionResult()
+        preempted = False
+        if goal.is_learning:
+            self._baseline[goal.topological_node] = list()
+            self._ptu_info[goal.topological_node] = None
+            preempted = self._learning(goal)
+        else:
+            preempted = self._predicting(goal, start)
+        if preempted:
+            rospy.loginfo("The action has been preempted...")
+            self.server.set_preempted()
+        else:
+            rospy.loginfo("The action succeeded...")
+            self.server.set_succeeded(ChangeDetectionResult())
 
     def _predicting(self, goal, start):
-        counter = [False for i in range(0, 5)]
+        counter = [False for i in range(0, 3)]
         while (rospy.Time.now() - start) < goal.duration:
-            if self.server.is_preempt_requested():
-                return
+            if self.server.is_preempt_requested() or rospy.is_shutdown():
+                return True
+            self._lock.acquire()
             data = copy.deepcopy(self._depth)
+            self._lock.release()
             mse = [0.0, 0.0, 0.0]
             for ind, point in enumerate(data):
                 if self._is_nan(
                     self._baseline[goal.topological_node][ind]
                 ) or self._is_nan(point):
                     continue
-                mse[0] += (self._baseline[goal.topological_node][0]-point[0])**2
-                mse[1] += (self._baseline[goal.topological_node][1]-point[1])**2
-                mse[2] += (self._baseline[goal.topological_node][2]-point[2])**2
+                mse[0] += (
+                    self._baseline[goal.topological_node][ind][0]-point[0]
+                )**2
+                mse[1] += (
+                    self._baseline[goal.topological_node][ind][1]-point[1]
+                )**2
+                mse[2] += (
+                    self._baseline[goal.topological_node][ind][2]-point[2]
+                )**2
             rmse = [math.sqrt(i/float(len(data))) for i in mse]
-            counter[self._counter % len(counter)] = (sum(rmse)/len(rmse) >= 0.1)
+            print rmse
+            counter[self._counter % len(counter)] = (
+                sum(rmse)/len(rmse) >= self.threshold
+            )
             self._counter += 1
             is_changing = False
             if False not in counter:
@@ -189,7 +200,8 @@ class ChangeDetector(object):
                     goal.topological_node, is_changing
                 )
             )
-            rospy.sleep(1)
+            rospy.sleep(0.1)
+        return False
 
     def _is_nan(self, point):
         return math.isnan(point[0]) or math.isnan(point[1]) or math.isnan(
@@ -208,6 +220,12 @@ if __name__ == '__main__':
         "-o", dest="num_obs", default="100",
         help="The number of observations for baseline (default=100)"
     )
+    parser_arg.add_argument(
+        "-t", dest="threshold", default="0.05",
+        help="Threshold for saying something has changed (default=0.05)"
+    )
     args = parser_arg.parse_args()
-    ChangeDetector(args.depth_topic+"/points", int(args.num_obs))
+    ChangeDetector(
+        args.depth_topic+"/points", int(args.num_obs), float(args.threshold)
+    )
     rospy.spin()
