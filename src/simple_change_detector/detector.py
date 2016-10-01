@@ -12,8 +12,8 @@ from sensor_msgs.point_cloud2 import read_points
 from sensor_msgs.msg import PointCloud2, JointState
 from strands_navigation_msgs.msg import TopologicalMap
 from mongodb_store.message_store import MessageStoreProxy
-from simple_change_detector.msg import ChangeDetectionAction
 from simple_change_detector.msg import BaselineDetectionMsg, ChangeDetectionMsg
+from simple_change_detector.msg import ChangeDetectionAction, ChangeDetectionResult
 
 
 class ChangeDetector(object):
@@ -44,11 +44,15 @@ class ChangeDetector(object):
         self._pub = rospy.Publisher(
             rospy.get_name()+"/detections", ChangeDetectionMsg, queue_size=10
         )
-        self._db = MessageStoreProxy(collection=rospy.get_name()+"_baseline")
+        collection = rospy.get_name()[1:]+"_baseline"
+        self._db = MessageStoreProxy(collection=collection)
         self._load_baseline()
-        rospy.loginfo("Creating an action server %s/action..." % rospy.get_name())
+        rospy.loginfo(
+            "Creating an action server %s/action..." % rospy.get_name()
+        )
         self.server = actionlib.SimpleActionServer(
-            rospy.get_name()+"/action", ChangeDetectionAction, self.execute, False
+            rospy.get_name()+"/action", ChangeDetectionAction,
+            self.execute, False
         )
         self.server.start()
         rospy.sleep(0.1)
@@ -119,11 +123,15 @@ class ChangeDetector(object):
         self._is_learning = True
         while len(self._depths) < self.num_of_obs:
             if self.server.is_preempt_requested():
+                self._is_learning = False
+                self._depths = list()
                 return
             rospy.sleep(0.1)
+        self._is_learning = False
         baseline = list()
         for base in self._depths:
             if self.server.is_preempt_requested():
+                self._depths = list()
                 return
             if baseline == list():
                 baseline = np.array(base)
@@ -132,16 +140,15 @@ class ChangeDetector(object):
         baseline = baseline / float(len(self._depth))
         self._baseline[goal.topological_node] = baseline
         self._ptu_info[goal.topological_node] = self.ptu
-        self._db.store(
+        baseline = self._array_to_point(baseline)
+        self._db.insert(
             BaselineDetectionMsg(
-                self._array_to_point(baseline),
-                self._array_to_point(std_dev),
+                baseline,
                 self._ptu_info[goal.topological_node],
                 self._topo_info[goal.topological_node]
-            )
+            ), {}
         )
         self._depths = list()
-        self._is_learning = False
 
     def execute(self, goal):
         # print msg.height, msg.width
@@ -155,6 +162,7 @@ class ChangeDetector(object):
             self._learning(goal, start)
         elif not goal.is_learning:
             self._predicting(goal, start)
+        return ChangeDetectionResult()
 
     def _predicting(self, goal, start):
         counter = [False for i in range(0, 5)]
@@ -168,11 +176,11 @@ class ChangeDetector(object):
                     self._baseline[goal.topological_node][ind]
                 ) or self._is_nan(point):
                     continue
-                mse[0] += (self._baseline[goal.topological_node][0] - point[0])**2
-                mse[1] += (self._baseline[goal.topological_node][1] - point[1])**2
-                mse[2] += (self._baseline[goal.topological_node][2] - point[2])**2
+                mse[0] += (self._baseline[goal.topological_node][0]-point[0])**2
+                mse[1] += (self._baseline[goal.topological_node][1]-point[1])**2
+                mse[2] += (self._baseline[goal.topological_node][2]-point[2])**2
             rmse = [math.sqrt(i/float(len(data))) for i in mse]
-            counter[self._counter%len(counter)] = (sum(rmse) / len(rmse) >= 0.1)
+            counter[self._counter % len(counter)] = (sum(rmse)/len(rmse) >= 0.1)
             self._counter += 1
             is_changing = False
             if False not in counter:
@@ -194,14 +202,14 @@ class ChangeDetector(object):
 if __name__ == '__main__':
     rospy.init_node("change_detector")
     parser_arg = argparse.ArgumentParser(prog=rospy.get_name())
-    parser.add_argument(
+    parser_arg.add_argument(
         "-d", dest="depth_topic", default="/head_xtion/depth",
         help="Depth topic to subscribe to (default=/head_xtion/depth)"
     )
-    parser.add_argument(
+    parser_arg.add_argument(
         "-o", dest="num_obs", default="100",
         help="The number of observations for baseline (default=100)"
     )
-    args = parser.parse_args()
+    args = parser_arg.parse_args()
     ChangeDetector(args.depth_topic+"/points", int(args.num_obs))
     rospy.spin()
