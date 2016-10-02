@@ -7,6 +7,7 @@ find_package(catkin REQUIRED COMPONENTS
   actionlib
   actionlib_msgs
   sensor_msgs
+  scitos_msgs
   geometry_msgs
   mongodb_store
   message_generation
@@ -57,6 +58,7 @@ catkin_package(
   actionlib
   actionlib_msgs
   sensor_msgs 
+  scitos_msgs
   geometry_msgs
   mongodb_store
   message_runtime

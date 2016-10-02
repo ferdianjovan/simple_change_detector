@@ -57,7 +57,9 @@ class ChangeDetector(object):
             rospy.get_name()+"/detections", ChangeDetectionMsg, queue_size=10
         )
         collection = rospy.get_name()[1:]+"_baseline"
-        self._db = MessageStoreProxy(collection=collection)
+        collection2 = rospy.get_name()[1:]+"_detections"
+        self._db_base = MessageStoreProxy(collection=collection)
+        self._db_detect = MessageStoreProxy(collection=collection2)
         self._load_baseline()
         rospy.loginfo(
             "Creating an action server %s/action..." % rospy.get_name()
@@ -114,7 +116,7 @@ class ChangeDetector(object):
         wp = self._topo_info.values()[0]
         rospy.loginfo("Load baseline from db with map name: %s..." % wp.map)
         query = {"topological_node.map": wp.map}
-        logs = self._db.query(BaselineDetectionMsg._type, query, {})
+        logs = self._db_base.query(BaselineDetectionMsg._type, query, {})
         if len(logs) > 0:
             rospy.loginfo("%d entries are being obtained..." % len(logs))
             for log in logs:
@@ -158,7 +160,7 @@ class ChangeDetector(object):
         baseline = baseline / float(self.num_of_obs)
         self._baseline[goal.topological_node] = baseline
         self._ptu_info[goal.topological_node] = self.ptu
-        self._db.insert(
+        self._db_base.insert(
             BaselineDetectionMsg(
                 self._array_to_point(baseline),
                 self._ptu_info[goal.topological_node],
@@ -220,7 +222,7 @@ class ChangeDetector(object):
                     self._baseline[goal.topological_node][ind][2]-point[2]
                 )**2
             rmse = [math.sqrt(i/float(len(data))) for i in mse]
-            rospy.loginfo(rmse)
+            # rospy.loginfo(rmse)
             counter[self._counter % len(counter)] = (
                 sum(rmse)/len(rmse) >= self.threshold
             )
@@ -228,18 +230,24 @@ class ChangeDetector(object):
             is_changing = False
             if False not in counter:
                 is_changing = True
-            self._pub.publish(
-                ChangeDetectionMsg(
-                    Header(self._counter, rospy.Time.now(), ''),
-                    goal.topological_node, is_changing
-                )
+            msg = ChangeDetectionMsg(
+                Header(self._counter, rospy.Time.now(), ''),
+                goal.topological_node, is_changing
+            )
+            self._pub.publish(msg)
+            self._db_detect.insert(
+                msg, {
+                    "map": self._topo_info[goal.topological_node].map,
+                    "ptu_pan": self._ptu_info[goal.topological_node].position[0],
+                    "ptu_tilt": self._ptu_info[goal.topological_node].position[1]
+                }
             )
             rospy.sleep(1)
         return False
 
     def _moving_ptu(self, ptu_pos, start, duration):
-        pan = int(ptu_pos[0]*180.0/math.pi)
-        tilt = int(ptu_pos[1]*180/math.pi)
+        pan = float(ptu_pos[0]*180.0/math.pi)
+        tilt = float(ptu_pos[1]*180/math.pi)
         rospy.loginfo(
             "Moving ptu %.2f pan and %.2f tilt..." % (pan, tilt)
         )
