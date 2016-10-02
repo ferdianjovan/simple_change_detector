@@ -11,6 +11,7 @@ from std_msgs.msg import Header
 from geometry_msgs.msg import Point
 from sensor_msgs.point_cloud2 import read_points
 from sensor_msgs.msg import PointCloud2, JointState
+from scitos_ptu.msg import PtuGotoAction, PtuGotoGoal
 from strands_navigation_msgs.msg import TopologicalMap
 from mongodb_store.message_store import MessageStoreProxy
 from simple_change_detector.msg import ChangeDetectionAction
@@ -28,6 +29,7 @@ class ChangeDetector(object):
                 num_obs, threshold
             )
         )
+        self._is_active = False
         self.threshold = threshold
         self._counter = 0
         self.num_of_obs = num_obs
@@ -42,10 +44,13 @@ class ChangeDetector(object):
         self._topo_info = dict()
         self._get_topo_info()
 
-        rospy.loginfo("Subscribing to /ptu/state")
         self.ptu = None
+        rospy.loginfo("Connecting with /SetPTUState action server...")
+        self.ptu_action = actionlib.SimpleActionClient(
+            "SetPTUState", PtuGotoAction
+        )
+        self.ptu_action.wait_for_server()
         self._ptu_info = dict()
-        rospy.Subscriber("/ptu/state", JointState, self._ptu_cb, None, 10)
 
         rospy.loginfo("Publishing topic %s/detections..." % rospy.get_name())
         self._pub = rospy.Publisher(
@@ -65,18 +70,21 @@ class ChangeDetector(object):
         rospy.sleep(0.1)
 
     def _ptu_cb(self, msg):
-        self.ptu = msg
+        if self._is_active:
+            self.ptu = msg
+        rospy.sleep(0.1)
 
     def _topo_cb(self, msg):
         self.topo_map = msg
 
     def _depth_cb(self, msg):
-        self._lock.acquire()
-        self._depth = [
-            point for point in read_points(msg, field_names=("x", "y", "z"))
-        ]
-        rospy.sleep(0.1)
-        self._lock.release()
+        if self._is_active:
+            self._lock.acquire()
+            self._depth = [
+                point for point in read_points(msg, field_names=("x", "y", "z"))
+            ]
+            self._lock.release()
+        rospy.sleep(1)
 
     def _get_topo_info(self):
         topo_sub = rospy.Subscriber(
@@ -110,6 +118,15 @@ class ChangeDetector(object):
         if len(logs) > 0:
             rospy.loginfo("%d entries are being obtained..." % len(logs))
             for log in logs:
+                if log[0].topological_node.name in self._ptu_info:
+                    if log[0].ptu_state.header.stamp < self._ptu_info[
+                        log[0].topological_node.name
+                    ].header.stamp:
+                        continue
+                    else:
+                        rospy.loginfo(
+                            "A newer baseline for %s is found, updating..." % log[0].topological_node.name
+                        )
                 self._baseline[
                     log[0].topological_node.name
                 ] = self._point_to_array(log[0].baseline)
@@ -122,6 +139,10 @@ class ChangeDetector(object):
 
     def _learning(self, goal):
         baseline = list()
+        rospy.loginfo("Subscribing to /ptu/state")
+        subs = rospy.Subscriber(
+            "/ptu/state", JointState, self._ptu_cb, None, 10
+        )
         for i in range(0, self.num_of_obs):
             self._lock.acquire()
             base = copy.deepcopy(self._depth)
@@ -144,17 +165,26 @@ class ChangeDetector(object):
                 self._topo_info[goal.topological_node]
             ), {}
         )
+        subs.unregister()
         return False
 
     def execute(self, goal):
         start = rospy.Time.now()
+        self._is_active = True
         preempted = False
+        while self._depth is None:
+            rospy.sleep(0.1)
         if goal.is_learning:
             self._baseline[goal.topological_node] = list()
             self._ptu_info[goal.topological_node] = None
             preempted = self._learning(goal)
-        else:
+        elif goal.topological_node in self._baseline:
             preempted = self._predicting(goal, start)
+        else:
+            rospy.logwarn(
+                "There is no baseline for change detection in %s" % goal.topological_node
+            )
+        self._is_active = False
         if preempted:
             rospy.loginfo("The action has been preempted...")
             self.server.set_preempted()
@@ -163,7 +193,11 @@ class ChangeDetector(object):
             self.server.set_succeeded(ChangeDetectionResult())
 
     def _predicting(self, goal, start):
-        counter = [False for i in range(0, 3)]
+        counter = [False for i in range(0, 2)]
+        self._moving_ptu(
+            self._ptu_info[goal.topological_node].position,
+            start, goal.duration
+        )
         while (rospy.Time.now() - start) < goal.duration:
             if self.server.is_preempt_requested() or rospy.is_shutdown():
                 return True
@@ -186,7 +220,7 @@ class ChangeDetector(object):
                     self._baseline[goal.topological_node][ind][2]-point[2]
                 )**2
             rmse = [math.sqrt(i/float(len(data))) for i in mse]
-            print rmse
+            rospy.loginfo(rmse)
             counter[self._counter % len(counter)] = (
                 sum(rmse)/len(rmse) >= self.threshold
             )
@@ -200,8 +234,27 @@ class ChangeDetector(object):
                     goal.topological_node, is_changing
                 )
             )
-            rospy.sleep(0.1)
+            rospy.sleep(1)
         return False
+
+    def _moving_ptu(self, ptu_pos, start, duration):
+        pan = int(ptu_pos[0]*180.0/math.pi)
+        tilt = int(ptu_pos[1]*180/math.pi)
+        rospy.loginfo(
+            "Moving ptu %.2f pan and %.2f tilt..." % (pan, tilt)
+        )
+        self.ptu_action.send_goal(PtuGotoGoal(pan, tilt, 30, 30))
+        self.ptu_action.wait_for_result()
+        result = self.ptu_action.get_result()
+        while len(result.state.position) == 0 and (rospy.Time.now() - start) < duration:
+            if self.server.is_preempt_requested() or rospy.is_shutdown():
+                return
+            rospy.logwarn("PTU does not seem to move, try again...")
+            self.ptu_action.send_goal(PtuGotoGoal(pan, tilt, 30, 30))
+            self.ptu_action.wait_for_result()
+            result = self.ptu_action.get_result()
+            rospy.sleep(0.1)
+        rospy.sleep(1)
 
     def _is_nan(self, point):
         return math.isnan(point[0]) or math.isnan(point[1]) or math.isnan(
