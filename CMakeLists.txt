@@ -8,7 +8,6 @@ find_package(catkin REQUIRED COMPONENTS
   actionlib_msgs
   sensor_msgs
   scitos_msgs
-  geometry_msgs
   mongodb_store
   message_generation
   strands_navigation_msgs
@@ -23,7 +22,6 @@ catkin_python_setup()
 add_message_files(
   FILES
   ChangeDetectionMsg.msg
-  BaselineDetectionMsg.msg
 )
 
 # add_service_files(
@@ -40,10 +38,7 @@ add_action_files(
 generate_messages(
   DEPENDENCIES
   std_msgs
-  sensor_msgs
-  geometry_msgs
   actionlib_msgs
-  strands_navigation_msgs
 )
 
 ###################################
@@ -59,7 +54,6 @@ catkin_package(
   actionlib_msgs
   sensor_msgs 
   scitos_msgs
-  geometry_msgs
   mongodb_store
   message_runtime
   strands_navigation_msgs
