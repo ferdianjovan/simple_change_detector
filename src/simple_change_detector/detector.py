@@ -257,7 +257,7 @@ class ChangeDetector(object):
                 is_changing = True
             msg = ChangeDetectionMsg(
                 Header(self._counter, rospy.Time.now(), ''),
-                wp, is_changing
+                wp, is_changing, out_percentage
             )
             self._pub.publish(msg)
             self._db_detect.insert(

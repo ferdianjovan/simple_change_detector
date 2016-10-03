@@ -1,3 +1,4 @@
 std_msgs/Header header
 string topological_node
 bool is_changing
+float32 outlier
