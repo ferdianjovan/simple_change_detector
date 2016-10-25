@@ -1,4 +1,3 @@
-string topological_node
 bool is_learning
 duration duration
 ---

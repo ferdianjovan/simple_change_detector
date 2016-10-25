@@ -9,9 +9,8 @@ import threading
 import actionlib
 import numpy as np
 from std_msgs.msg import Header
-from sensor_msgs.msg import Image, JointState
+from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
-from scitos_ptu.msg import PtuGotoAction, PtuGotoGoal
 from strands_navigation_msgs.msg import TopologicalMap
 from simple_change_detector.msg import ChangeDetectionMsg
 from mongodb_store.message_store import MessageStoreProxy
@@ -33,8 +32,8 @@ class ChangeDetector(object):
         self.threshold = threshold
         self._counter = 0
         self.num_of_obs = num_obs
-        self._baseline = dict()
-        self._std_dev = dict()
+        self._baseline = np.array(list())
+        self._std_dev = np.array(list())
         self._lock = threading.Lock()
 
         rospy.loginfo("Subscribing to %s" % depth_topic)
@@ -42,17 +41,7 @@ class ChangeDetector(object):
         self._bridge = CvBridge()
         rospy.Subscriber(depth_topic, Image, self._depth_cb, None, 1)
 
-        self.topo_map = None
-        self._topo_info = list()
-        self._get_topo_info()
-
-        self.ptu = None
-        rospy.loginfo("Connecting with /SetPTUState action server...")
-        self.ptu_action = actionlib.SimpleActionClient(
-            "SetPTUState", PtuGotoAction
-        )
-        self.ptu_action.wait_for_server()
-        self._ptu_info = dict()
+        self.topo_map = self._get_topo_info()
 
         rospy.loginfo("Publishing topic %s/detections..." % rospy.get_name())
         self._pub = rospy.Publisher(
@@ -71,13 +60,18 @@ class ChangeDetector(object):
         self.server.start()
         rospy.sleep(0.1)
 
-    def _ptu_cb(self, msg):
-        if self._is_active:
-            self.ptu = msg
-        rospy.sleep(0.1)
-
     def _topo_cb(self, msg):
         self.topo_map = msg
+
+    def _get_topo_info(self):
+        topo_sub = rospy.Subscriber(
+            "/topological_map", TopologicalMap, self._topo_cb, None, 10
+        )
+        rospy.loginfo("Getting information from /topological_map...")
+        while self.topo_map is None:
+            rospy.sleep(0.1)
+        topo_sub.unregister()
+        return self.topo_map.map
 
     def _depth_cb(self, msg):
         if self._is_active:
@@ -92,55 +86,32 @@ class ChangeDetector(object):
             self._lock.release()
         rospy.sleep(0.1)
 
-    def _get_topo_info(self):
-        topo_sub = rospy.Subscriber(
-            "/topological_map", TopologicalMap, self._topo_cb, None, 10
-        )
-        rospy.loginfo("Getting information from /topological_map...")
-        while self.topo_map is None:
-            rospy.sleep(0.1)
-        topo_sub.unregister()
-        for wp in self.topo_map.nodes:
-            self._topo_info.append(wp.name)
-        self.topo_map = self.topo_map.map
-
     def _load_baseline(self):
         rospy.loginfo(
             "Load baseline from db with map name: %s..." % self.topo_map
         )
-        for wp in self._topo_info:
-            fname = self.topo_map + "_" + wp
-            try:
-                baseline = np.fromfile(
-                    roslib.packages.get_pkg_dir(
-                        "simple_change_detector"
-                    ) + ("/config/%s_baseline.yaml" % fname),
-                    dtype=np.float32
-                )
-                self._baseline[wp] = baseline.reshape(640, 480)
-                std_dev = np.fromfile(
-                    roslib.packages.get_pkg_dir(
-                        "simple_change_detector"
-                    ) + ("/config/%s_std_dev.yaml" % fname),
-                    dtype=np.float32
-                )
-                self._std_dev[wp] = std_dev.reshape(640, 480)
-                self._ptu_info[wp] = np.fromfile(
-                    roslib.packages.get_pkg_dir(
-                        "simple_change_detector"
-                    ) + ("/config/%s_ptu.yaml" % fname),
-                    dtype=np.float64
-                )
-                rospy.loginfo("Data for node %s are obtained..." % wp)
-            except:
-                rospy.sleep(0.1)
+        fname = self.topo_map
+        try:
+            baseline = np.fromfile(
+                roslib.packages.get_pkg_dir(
+                    "simple_change_detector"
+                ) + ("/config/%s_baseline.yaml" % fname),
+                dtype=np.float32
+            )
+            self._baseline = baseline.reshape(640, 480)
+            std_dev = np.fromfile(
+                roslib.packages.get_pkg_dir(
+                    "simple_change_detector"
+                ) + ("/config/%s_std_dev.yaml" % fname),
+                dtype=np.float32
+            )
+            self._std_dev = std_dev.reshape(640, 480)
+            rospy.loginfo("Baseline and Std dev for map %s are obtained..." % fname)
+        except:
+            rospy.sleep(0.1)
 
     def _learning(self, goal):
-        baseline = list()
-        rospy.loginfo("Subscribing to /ptu/state")
-        subs = rospy.Subscriber(
-            "/ptu/state", JointState, self._ptu_cb, None, 10
-        )
+        baseline = np.array(list())
         # calculate average in each x, y, z
         bases = list()
         for i in range(0, self.num_of_obs):
@@ -155,36 +126,28 @@ class ChangeDetector(object):
             else:
                 baseline = baseline + np.array(base)
             rospy.loginfo("Learning %d observation(s)..." % (i+1))
-            rospy.sleep(0.1)
+            rospy.sleep(0.05)
         baseline = baseline / float(self.num_of_obs)
-        self._baseline[goal.topological_node] = baseline
+        self._baseline = baseline
         self._is_active = False
-        self._ptu_info[goal.topological_node] = np.array(self.ptu.position)
-        subs.unregister()
         # calculate standard deviation in each x, y, z
-        std_dev = list()
+        std_dev = np.array(list())
         for base in bases:
             if std_dev == list():
                 std_dev = (np.array(base) - baseline)**2
             else:
                 std_dev += (np.array(base) - baseline)**2
         std_dev = np.sqrt(std_dev / float(self.num_of_obs))
-        self._std_dev[goal.topological_node] = std_dev
+        self._std_dev = std_dev
         # storing to file
-        rospy.loginfo("Storing ptu for %s..." % goal.topological_node)
-        fname = self.topo_map + "_" + goal.topological_node
-        np.array(self.ptu.position).tofile(
-            roslib.packages.get_pkg_dir(
-                "simple_change_detector"
-            ) + ("/config/%s_ptu.yaml" % fname)
-        )
-        rospy.loginfo("Storing baseline for %s..." % goal.topological_node)
+        fname = self.topo_map
+        rospy.loginfo("Storing baseline for map %s..." % fname)
         baseline.tofile(
             roslib.packages.get_pkg_dir(
                 "simple_change_detector"
             ) + ("/config/%s_baseline.yaml" % fname)
         )
-        rospy.loginfo("Storing std_dev for %s..." % goal.topological_node)
+        rospy.loginfo("Storing std_dev for map %s..." % fname)
         std_dev.tofile(
             roslib.packages.get_pkg_dir(
                 "simple_change_detector"
@@ -200,18 +163,13 @@ class ChangeDetector(object):
         while self._depth is None:
             rospy.sleep(0.1)
         if goal.is_learning:
-            self._baseline[goal.topological_node] = list()
-            self._std_dev[goal.topological_node] = list()
-            self._ptu_info[goal.topological_node] = None
+            self._baseline = np.array(list())
+            self._std_dev = np.array(list())
             preempted = self._learning(goal)
-        elif goal.topological_node in self._baseline:
-            preempted = self._predicting(goal, start)
+        elif self._baseline != np.array(list()):
+            preempted = self._predicting(start, goal.duration)
         else:
-            rospy.logwarn(
-                "There is no baseline for change detection in %s" % (
-                    goal.topological_node
-                )
-            )
+            rospy.logwarn("There is no baseline for this map")
         self._is_active = False
         if preempted:
             rospy.loginfo("The action has been preempted...")
@@ -220,87 +178,83 @@ class ChangeDetector(object):
             rospy.loginfo("The action succeeded...")
             self.server.set_succeeded(ChangeDetectionResult())
 
-    def _predicting(self, goal, start):
-        wp = goal.topological_node
+    def _predicting(self, start, duration):
         counter = [0.0 for i in range(0, 5)]
-        counter_has_changed = [False for i in range(0, 5)]
-        self._moving_ptu(
-            self._ptu_info[wp],
-            start, goal.duration
-        )
         previous_data = None
-        while (rospy.Time.now() - start) < goal.duration:
+        while (rospy.Time.now() - start) < duration:
             if self.server.is_preempt_requested() or rospy.is_shutdown():
                 return True
             self._lock.acquire()
             data = copy.deepcopy(self._depth)
             self._lock.release()
-            outliers = np.array(data) - self._baseline[wp]
-            outliers = np.abs(outliers)
-            outliers = outliers > self._std_dev[wp]*2
-            outliers = np.array(outliers, dtype=int)
-            out_percentage = (outliers.sum() / float(outliers.size)) * 100.0
-            counter_has_changed[self._counter % len(counter)] = out_percentage
-            counter[self._counter % len(counter)] = self._is_moving(
-                previous_data, data, wp
+            outlier_percentage, blob_idxs = self._is_changing(
+                previous_data, data
             )
+            counter[self._counter % len(counter)] = outlier_percentage
             previous_data = data
             self._counter += 1
-            is_moving = (0.0 not in counter)
-            has_changed = sum(
-                [1 for i in counter_has_changed if i >= self.threshold]
-            )
-            has_changed = has_changed >= len(counter_has_changed)
-            rospy.loginfo(
-                "Has changed from baseline: %s, Is changing right now: %s" % (
-                    has_changed, is_moving
-                )
-            )
+            is_changing = (0.0 not in counter)
+            rospy.loginfo("Is changing right now: %s" % is_changing)
+            print str(len(blob_idxs)), str(blob_idxs[:3])
             msg = ChangeDetectionMsg(
                 Header(self._counter, rospy.Time.now(), ''),
-                wp, has_changed, counter_has_changed, is_moving, counter
+                is_changing, counter
             )
             self._pub.publish(msg)
             self._db_detect.insert(
                 msg, {
                     "threshold": self.threshold,
                     "map": self.topo_map,
-                    "ptu_pan": self._ptu_info[wp][0],
-                    "ptu_tilt": self._ptu_info[wp][1]
                 }
             )
-            rospy.sleep(0.1)
+            rospy.sleep(0.05)
         return False
 
-    def _is_moving(self, previous, current, wp):
+    def _is_changing(self, previous, current):
         if previous is None:
             return 0.0
-        outliers = np.abs(previous - current) > self._std_dev[wp]*2
+        outliers = np.abs(previous - current) > self._std_dev*2
         outliers = np.array(outliers, dtype=int)
         out_percentage = (outliers.sum() / float(outliers.size)) * 100.0
         if out_percentage < self.threshold:
             out_percentage = 0.0
-        return out_percentage
-
-    def _moving_ptu(self, ptu_pos, start, duration):
-        pan = float(ptu_pos[0]*180.0/np.pi)
-        tilt = float(ptu_pos[1]*180/np.pi)
-        rospy.loginfo(
-            "Moving ptu %.2f pan and %.2f tilt..." % (pan, tilt)
-        )
-        self.ptu_action.send_goal(PtuGotoGoal(pan, tilt, 30, 30))
-        self.ptu_action.wait_for_result()
-        result = self.ptu_action.get_result()
-        while len(result.state.position) == 0 and (rospy.Time.now() - start) < duration:
-            # print "result ptu action: %s" % str(result)
-            if self.server.is_preempt_requested() or rospy.is_shutdown():
-                return
-            rospy.logwarn("PTU does not seem to move, try again...")
-            self.ptu_action.send_goal(PtuGotoGoal(pan, tilt, 30, 30))
-            self.ptu_action.wait_for_result()
-            result = self.ptu_action.get_result()
-            rospy.sleep(0.1)
-        rospy.sleep(1)
+        # row, column = np.where(outliers==1)
+        blob_size = 11
+        blob = np.ones([blob_size, blob_size], dtype=int)
+        row_idx = 0
+        col_idx = 0
+        blob_idxs = list()
+        while row_idx+blob_size <= outliers.shape[0]:
+            while col_idx+blob_size <= outliers.shape[1]:
+                is_skipped = False
+                for blob_idx in blob_idxs:
+                    cond = row_idx >= blob_idx[0][0]
+                    cond = cond and row_idx <= blob_idx[1][0]
+                    cond = cond and col_idx >= blob_idx[0][1]
+                    cond = cond and col_idx <= blob_idx[1][1]
+                    if cond:
+                        is_skipped = True
+                        break
+                if is_skipped:
+                    col_idx += 1
+                    continue
+                submatrix = outliers[
+                    np.ix_(
+                        [i for i in range(row_idx, row_idx+blob_size)],
+                        [i for i in range(col_idx, col_idx+blob_size)]
+                    )
+                ]
+                intersect = (blob | submatrix).sum() / float(blob.size)
+                if intersect >= 0.75:
+                    blob_idxs.append([
+                        (row_idx, col_idx),
+                        (row_idx+(blob_size-1), col_idx+(blob_size-1))
+                    ])
+                    col_idx += blob_size
+                    continue
+                col_idx += 1
+            row_idx += 1
+        return out_percentage, blob_idxs
 
 
 if __name__ == '__main__':
