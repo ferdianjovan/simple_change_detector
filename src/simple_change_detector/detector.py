@@ -41,7 +41,9 @@ class ChangeDetector(object):
         self._bridge = CvBridge()
         rospy.Subscriber(depth_topic, Image, self._depth_cb, None, 1)
 
-        self.topo_map = self._get_topo_info()
+        self.topo_map = None
+        self._get_topo_info()
+        self.topo_map = self.topo_map.map
 
         rospy.loginfo("Publishing topic %s/detections..." % rospy.get_name())
         self._pub = rospy.Publisher(
@@ -71,7 +73,6 @@ class ChangeDetector(object):
         while self.topo_map is None:
             rospy.sleep(0.1)
         topo_sub.unregister()
-        return self.topo_map.map
 
     def _depth_cb(self, msg):
         if self._is_active:
@@ -111,7 +112,7 @@ class ChangeDetector(object):
             rospy.sleep(0.1)
 
     def _learning(self, goal):
-        baseline = np.array(list())
+        baseline = list()
         # calculate average in each x, y, z
         bases = list()
         for i in range(0, self.num_of_obs):
@@ -126,12 +127,12 @@ class ChangeDetector(object):
             else:
                 baseline = baseline + np.array(base)
             rospy.loginfo("Learning %d observation(s)..." % (i+1))
-            rospy.sleep(0.05)
+            rospy.sleep(0.1)
         baseline = baseline / float(self.num_of_obs)
         self._baseline = baseline
         self._is_active = False
         # calculate standard deviation in each x, y, z
-        std_dev = np.array(list())
+        std_dev = list()
         for base in bases:
             if std_dev == list():
                 std_dev = (np.array(base) - baseline)**2
@@ -187,7 +188,7 @@ class ChangeDetector(object):
             self._lock.acquire()
             data = copy.deepcopy(self._depth)
             self._lock.release()
-            outlier_percentage, blob_idxs = self._is_changing(
+            outlier_percentage = self._is_changing(
                 previous_data, data
             )
             counter[self._counter % len(counter)] = outlier_percentage
@@ -195,7 +196,6 @@ class ChangeDetector(object):
             self._counter += 1
             is_changing = (0.0 not in counter)
             rospy.loginfo("Is changing right now: %s" % is_changing)
-            print str(len(blob_idxs)), str(blob_idxs[:3])
             msg = ChangeDetectionMsg(
                 Header(self._counter, rospy.Time.now(), ''),
                 is_changing, counter
@@ -207,7 +207,7 @@ class ChangeDetector(object):
                     "map": self.topo_map,
                 }
             )
-            rospy.sleep(0.05)
+            rospy.sleep(0.1)
         return False
 
     def _is_changing(self, previous, current):
@@ -254,7 +254,8 @@ class ChangeDetector(object):
                     continue
                 col_idx += 1
             row_idx += 1
-        return out_percentage, blob_idxs
+        print str(len(blob_idxs)), str(blob_idxs[-4:])
+        return out_percentage
 
 
 if __name__ == '__main__':
