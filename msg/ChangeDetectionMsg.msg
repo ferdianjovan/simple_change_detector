@@ -1,4 +1,6 @@
 std_msgs/Header header
 string topological_node
+bool has_changed
+float32 has_changed_percentage 
 bool is_changing
-float32 outlier
+float32[] is_changing_percentages 

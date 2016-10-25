@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
+import cv2
 import copy
-import math
 import rospy
 import roslib
 import argparse
@@ -9,8 +9,8 @@ import threading
 import actionlib
 import numpy as np
 from std_msgs.msg import Header
-from sensor_msgs.point_cloud2 import read_points
-from sensor_msgs.msg import PointCloud2, JointState
+from sensor_msgs.msg import Image, JointState
+from cv_bridge import CvBridge, CvBridgeError
 from scitos_ptu.msg import PtuGotoAction, PtuGotoGoal
 from strands_navigation_msgs.msg import TopologicalMap
 from simple_change_detector.msg import ChangeDetectionMsg
@@ -22,7 +22,7 @@ from simple_change_detector.msg import ChangeDetectionResult
 class ChangeDetector(object):
 
     def __init__(
-        self, depth_topic="/head_xtion/depth/points", num_obs=50, threshold=0.05
+        self, depth_topic="/head_xtion/depth/image_raw", num_obs=50, threshold=5
     ):
         rospy.loginfo(
             "Number observation %d and threshold %.2f..." % (
@@ -35,13 +35,12 @@ class ChangeDetector(object):
         self.num_of_obs = num_obs
         self._baseline = dict()
         self._std_dev = dict()
-        self._upbound = dict()
-        self._lowbound = dict()
         self._lock = threading.Lock()
 
         rospy.loginfo("Subscribing to %s" % depth_topic)
         self._depth = None
-        rospy.Subscriber(depth_topic, PointCloud2, self._depth_cb, None, 1)
+        self._bridge = CvBridge()
+        rospy.Subscriber(depth_topic, Image, self._depth_cb, None, 1)
 
         self.topo_map = None
         self._topo_info = list()
@@ -83,9 +82,12 @@ class ChangeDetector(object):
     def _depth_cb(self, msg):
         if self._is_active:
             self._lock.acquire()
-            self._depth = [
-                point for point in read_points(msg, field_names=("x", "y", "z"))
-            ]
+            try:
+                cv_image = self._bridge.imgmsg_to_cv2(msg, "16UC1")
+                self._depth = np.array(cv_image, dtype=np.float32)
+                cv2.normalize(self._depth, self._depth, 0, 1, cv2.NORM_MINMAX)
+            except CvBridgeError as e:
+                rospy.logerr(e)
             self._lock.release()
         rospy.sleep(0.1)
 
@@ -112,33 +114,25 @@ class ChangeDetector(object):
                     roslib.packages.get_pkg_dir(
                         "simple_change_detector"
                     ) + ("/config/%s_baseline.yaml" % fname),
-                    dtype=np.float64
+                    dtype=np.float32
                 )
                 self._baseline[wp] = baseline.reshape(baseline.size/3, 3)
                 std_dev = np.fromfile(
                     roslib.packages.get_pkg_dir(
                         "simple_change_detector"
                     ) + ("/config/%s_std_dev.yaml" % fname),
-                    dtype=np.float64
+                    dtype=np.float32
                 )
                 self._std_dev[wp] = std_dev.reshape(std_dev.size/3, 3)
                 self._ptu_info[wp] = np.fromfile(
                     roslib.packages.get_pkg_dir(
                         "simple_change_detector"
                     ) + ("/config/%s_ptu.yaml" % fname),
-                    dtype=np.float64
+                    dtype=np.float32
                 )
                 rospy.loginfo("Data for node %s are obtained..." % wp)
-                rospy.loginfo("Calculate lower and upper bound at each node...")
-                self._calculate_low_up_bound(wp)
             except:
                 rospy.sleep(0.1)
-
-    def _calculate_low_up_bound(self, topo_node):
-        baseline = self._baseline[topo_node]
-        std_dev = self._std_dev[topo_node]
-        self._upbound[topo_node] = baseline + 2*std_dev
-        self._lowbound[topo_node] = baseline - 2*std_dev
 
     def _learning(self, goal):
         baseline = list()
@@ -195,9 +189,6 @@ class ChangeDetector(object):
                 "simple_change_detector"
             ) + ("/config/%s_std_dev.yaml" % fname)
         )
-        # calculate upper and lower bound confidence
-        rospy.loginfo("Calculate lower and upper bound at each node...")
-        self._calculate_low_up_bound(goal.topological_node)
         rospy.loginfo("Finish learning...")
         return False
 
@@ -230,34 +221,33 @@ class ChangeDetector(object):
 
     def _predicting(self, goal, start):
         wp = goal.topological_node
-        counter = [False for i in range(0, 1)]
+        counter = [0.0 for i in range(0, 3)]
         self._moving_ptu(
             self._ptu_info[wp],
             start, goal.duration
         )
+        previous_data = None
         while (rospy.Time.now() - start) < goal.duration:
             if self.server.is_preempt_requested() or rospy.is_shutdown():
                 return True
             self._lock.acquire()
             data = copy.deepcopy(self._depth)
             self._lock.release()
-            outliers = list()
-            higher = np.array(data).flatten() > self._upbound[wp].flatten()
-            lower = np.array(data).flatten() < self._lowbound[wp].flatten()
-            outliers = np.array(higher, dtype=int) + np.array(lower, dtype=int)
-            outliers = np.array(np.array(outliers, dtype=bool), dtype=int)
-            out_percentage = sum(outliers) / float(len(outliers))
-            rospy.loginfo("Outlier percentage: %.2f" % out_percentage)
-            counter[self._counter % len(counter)] = (
-                out_percentage >= self.threshold
+            outliers = np.abs(np.array(data) - self._baseline[wp])
+            outliers = outliers > self._std_dev[wp]*2
+            outliers = np.array(outliers, dtype=int)
+            out_percentage = (outliers.sum() / outliers.size) * 100.0
+            rospy.loginfo("Outlier percentage: %.2f%" % out_percentage)
+            counter[self._counter % len(counter)] = self._is_moving(
+                previous_data, data, wp
             )
+            previous_data = data
             self._counter += 1
-            is_changing = False
-            if False not in counter:
-                is_changing = True
+            is_moving = (0.0 not in counter)
             msg = ChangeDetectionMsg(
                 Header(self._counter, rospy.Time.now(), ''),
-                wp, is_changing, out_percentage
+                wp, (out_percentage >= self.threshold),
+                out_percentage, is_moving, counter
             )
             self._pub.publish(msg)
             self._db_detect.insert(
@@ -271,9 +261,17 @@ class ChangeDetector(object):
             rospy.sleep(0.1)
         return False
 
+    def _is_moving(self, previous, current, wp):
+        outliers = np.abs(previous - current) > self._std_dev[wp]*2
+        outliers = np.array(outliers, dtype=int)
+        out_percentage = (outliers.sum() / outliers.size) * 100.0
+        if out_percentage < self.threshold:
+            out_percentage = 0.0
+        return out_percentage
+
     def _moving_ptu(self, ptu_pos, start, duration):
-        pan = float(ptu_pos[0]*180.0/math.pi)
-        tilt = float(ptu_pos[1]*180/math.pi)
+        pan = float(ptu_pos[0]*180.0/np.pi)
+        tilt = float(ptu_pos[1]*180/np.pi)
         rospy.loginfo(
             "Moving ptu %.2f pan and %.2f tilt..." % (pan, tilt)
         )
@@ -281,6 +279,7 @@ class ChangeDetector(object):
         self.ptu_action.wait_for_result()
         result = self.ptu_action.get_result()
         while len(result.state.position) == 0 and (rospy.Time.now() - start) < duration:
+            print "result ptu action: %s" % str(result)
             if self.server.is_preempt_requested() or rospy.is_shutdown():
                 return
             rospy.logwarn("PTU does not seem to move, try again...")
@@ -289,11 +288,6 @@ class ChangeDetector(object):
             result = self.ptu_action.get_result()
             rospy.sleep(0.1)
         rospy.sleep(1)
-
-    def _is_nan(self, point):
-        return math.isnan(point[0]) or math.isnan(point[1]) or math.isnan(
-            point[2]
-        )
 
 
 if __name__ == '__main__':
@@ -308,11 +302,11 @@ if __name__ == '__main__':
         help="The number of observations for baseline (default=100)"
     )
     parser_arg.add_argument(
-        "-t", dest="threshold", default="0.05",
-        help="Threshold for saying something has changed (default=0.05)"
+        "-t", dest="threshold", default="5",
+        help="Threshold percentage for saying something has changed (default=5)"
     )
     args = parser_arg.parse_args()
     ChangeDetector(
-        args.depth_topic+"/points", int(args.num_obs), float(args.threshold)
+        args.depth_topic+"/image_raw", int(args.num_obs), float(args.threshold)
     )
     rospy.spin()
