@@ -86,6 +86,7 @@ class ChangeDetector(object):
                 cv_image = self._bridge.imgmsg_to_cv2(msg, "16UC1")
                 self._depth = np.array(cv_image, dtype=np.float32)
                 cv2.normalize(self._depth, self._depth, 0, 1, cv2.NORM_MINMAX)
+                self._depth = self._depth.reshape(640, 480)
             except CvBridgeError as e:
                 rospy.logerr(e)
             self._lock.release()
@@ -116,19 +117,19 @@ class ChangeDetector(object):
                     ) + ("/config/%s_baseline.yaml" % fname),
                     dtype=np.float32
                 )
-                self._baseline[wp] = baseline.reshape(baseline.size/3, 3)
+                self._baseline[wp] = baseline.reshape(640, 480)
                 std_dev = np.fromfile(
                     roslib.packages.get_pkg_dir(
                         "simple_change_detector"
                     ) + ("/config/%s_std_dev.yaml" % fname),
                     dtype=np.float32
                 )
-                self._std_dev[wp] = std_dev.reshape(std_dev.size/3, 3)
+                self._std_dev[wp] = std_dev.reshape(640, 480)
                 self._ptu_info[wp] = np.fromfile(
                     roslib.packages.get_pkg_dir(
                         "simple_change_detector"
                     ) + ("/config/%s_ptu.yaml" % fname),
-                    dtype=np.float32
+                    dtype=np.float64
                 )
                 rospy.loginfo("Data for node %s are obtained..." % wp)
             except:
@@ -221,7 +222,8 @@ class ChangeDetector(object):
 
     def _predicting(self, goal, start):
         wp = goal.topological_node
-        counter = [0.0 for i in range(0, 3)]
+        counter = [0.0 for i in range(0, 5)]
+        counter_has_changed = [False for i in range(0, 5)]
         self._moving_ptu(
             self._ptu_info[wp],
             start, goal.duration
@@ -233,21 +235,30 @@ class ChangeDetector(object):
             self._lock.acquire()
             data = copy.deepcopy(self._depth)
             self._lock.release()
-            outliers = np.abs(np.array(data) - self._baseline[wp])
+            outliers = np.array(data) - self._baseline[wp]
+            outliers = np.abs(outliers)
             outliers = outliers > self._std_dev[wp]*2
             outliers = np.array(outliers, dtype=int)
-            out_percentage = (outliers.sum() / outliers.size) * 100.0
-            rospy.loginfo("Outlier percentage: %.2f%" % out_percentage)
+            out_percentage = (outliers.sum() / float(outliers.size)) * 100.0
+            counter_has_changed[self._counter % len(counter)] = out_percentage
             counter[self._counter % len(counter)] = self._is_moving(
                 previous_data, data, wp
             )
             previous_data = data
             self._counter += 1
             is_moving = (0.0 not in counter)
+            has_changed = sum(
+                [1 for i in counter_has_changed if i >= self.threshold]
+            )
+            has_changed = has_changed >= len(counter_has_changed)
+            rospy.loginfo(
+                "Has changed from baseline: %s, Is changing right now: %s" % (
+                    has_changed, is_moving
+                )
+            )
             msg = ChangeDetectionMsg(
                 Header(self._counter, rospy.Time.now(), ''),
-                wp, (out_percentage >= self.threshold),
-                out_percentage, is_moving, counter
+                wp, has_changed, counter_has_changed, is_moving, counter
             )
             self._pub.publish(msg)
             self._db_detect.insert(
@@ -262,9 +273,11 @@ class ChangeDetector(object):
         return False
 
     def _is_moving(self, previous, current, wp):
+        if previous is None:
+            return 0.0
         outliers = np.abs(previous - current) > self._std_dev[wp]*2
         outliers = np.array(outliers, dtype=int)
-        out_percentage = (outliers.sum() / outliers.size) * 100.0
+        out_percentage = (outliers.sum() / float(outliers.size)) * 100.0
         if out_percentage < self.threshold:
             out_percentage = 0.0
         return out_percentage
@@ -279,7 +292,7 @@ class ChangeDetector(object):
         self.ptu_action.wait_for_result()
         result = self.ptu_action.get_result()
         while len(result.state.position) == 0 and (rospy.Time.now() - start) < duration:
-            print "result ptu action: %s" % str(result)
+            # print "result ptu action: %s" % str(result)
             if self.server.is_preempt_requested() or rospy.is_shutdown():
                 return
             rospy.logwarn("PTU does not seem to move, try again...")
