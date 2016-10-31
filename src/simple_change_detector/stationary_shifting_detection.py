@@ -89,8 +89,9 @@ class StationaryShiftingDetection(object):
                         centroids = [
                             Point(i[2][0], i[2][1], 0) for i in contours
                         ]
+                        areas = zip(*contours)[1]
                         msg = ChangeDetectionMsg(
-                            Header(self._counter, rospyt.Time.now(), ''),
+                            Header(self._counter, rospy.Time.now(), ''),
                             self._robot_pose, self._ptu, centroids, areas
                         )
                         self._pub.publish(msg)
