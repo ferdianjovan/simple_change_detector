@@ -8,6 +8,7 @@ find_package(catkin REQUIRED COMPONENTS
   mongodb_store
   geometry_msgs
   message_generation
+  upper_body_detector 
 )
 
 catkin_python_setup()
@@ -52,6 +53,7 @@ catkin_package(
   geometry_msgs
   mongodb_store
   message_runtime
+  upper_body_detector 
 #  DEPENDS system_lib
 )
 

@@ -1,12 +1,14 @@
 #!/usr/bin/env python
 
 import cv2
+import math
 import rospy
 import argparse
 import numpy as np
 from sensor_msgs.msg import Image
 from scipy.spatial.distance import euclidean
 from cv_bridge import CvBridge, CvBridgeError
+from upper_body_detector.msg import UpperBodyDetector
 
 
 class ShiftingContour(object):
@@ -15,6 +17,7 @@ class ShiftingContour(object):
         self, topic_img="/head_xtion/rgb/image_raw", min_dist=5, max_dist=100,
         min_contour_area=1600, publish_contour=False, max_centroid_history_size=20
     ):
+        self._h_factor = 5
         self._min_dist = min_dist
         self._max_dist = max_dist
         self._min_contour_area = min_contour_area
@@ -28,6 +31,9 @@ class ShiftingContour(object):
             self._pub = rospy.Publisher(pub_topic, Image, queue_size=10)
             rospy.Timer(rospy.Duration(0, 100000000), self._print_contours)
         rospy.Subscriber(topic_img, Image, self._img_cb, None, 10)
+        rospy.Subscriber(
+            "/upper_body_detector/detections", UpperBodyDetector, self._ubd_cb, None, 10
+        )
 
     def reset(self):
         # CONTOUR STUFF
@@ -40,6 +46,12 @@ class ShiftingContour(object):
         # centroid stuff
         self._counter = 0
         self._centroid_history = dict()
+        # ubd stuff for excepting people from being ignored by contour
+        self._ubd_pos = list()
+
+    def _ubd_cb(self, ubd):
+        if len(ubd.pos_x) > 0:
+            self._ubd_pos = zip(ubd.pos_x, ubd.pos_y, ubd.width, ubd.height)
 
     def _img_cb(self, msg):
         try:
@@ -55,15 +67,18 @@ class ShiftingContour(object):
         rospy.sleep(0.05)
 
     def _img_substractor(self, img):
-        # should only be applied to depth/image_raw
+        # remove noise with local means denoising (slow)
         # if "depth" in self._pub.name.split("/"):
-        #     fgimg = np.array(img * 255, dtype=np.uint8)
-        #     fgimg = cv2.adaptiveThreshold(
-        #         fgimg, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        #         cv2.THRESH_BINARY, 11, 2
-        #     )
+        #     img = cv2.fastNlMeansDenoising(img, None, 10, 10, 7, 21)
+        # else:
+        #     img = cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)
         fgimg = self._fgbg.apply(img)
-        # otsu binarization + gaussian filter threshold
+        # remove coloured noise
+        # fgimg = cv2.adaptiveThreshold(
+        #     fgimg, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        #     cv2.THRESH_BINARY, 11, 2
+        # )
+        # otsu binarization + gaussian filter threshold for BW img
         blur = cv2.GaussianBlur(fgimg, (5, 5), 0)
         _, fgimg = cv2.threshold(
             blur, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU
@@ -84,9 +99,21 @@ class ShiftingContour(object):
                 centroid = (int(m['m10']/m['m00']), int(m['m01']/m['m00']))
                 tmp.append((cnt, m['m00'], centroid))
         contours = sorted(tmp, key=lambda i: i[1], reverse=True)[:5]
+        # contour exception for those inside ubd rect
+        exceptional_contours = list()
+        for cnt in contours:
+            # for pos in self._ubd_pos.values():
+            for pos in self._ubd_pos:
+                is_inside = pos[0] <= cnt[2][0] and cnt[2][0] <= pos[0]+pos[2]
+                is_inside = is_inside and pos[1] <= cnt[2][1]
+                is_inside = is_inside and cnt[2][1] <= pos[1]+(self._h_factor*pos[3])
+                if is_inside:
+                    exceptional_contours.append(cnt)
         # adding new centroids to centroid history
         tmp = list()
         for cnt in contours:
+            if cnt in exceptional_contours:
+                continue
             too_close = False
             for cntr in self._centroid_history.values():
                 if euclidean(cnt[2], cntr[1]) < self._min_dist:
@@ -101,13 +128,10 @@ class ShiftingContour(object):
         return contours
 
     def _find_shifting_contours(self, contours, previous_contours):
-        # if self._previous_contours is not None and self._previous_contours != list():
         shifting_contours = list()
         if len(previous_contours) > 0 and len(contours) > 0:
             nearest = self._get_nearest_contours(contours, previous_contours)
             if len(nearest) > 0:
-                # print nearest[0][0][1], nearest[0][0][2], nearest[0][1][1], nearest[0][1][2]
-                # print euclidean(nearest[0][0][2], nearest[0][1][2])
                 shifting_contours = zip(*nearest)[0]
         return shifting_contours
 
