@@ -50,8 +50,8 @@ class ShiftingContour(object):
         self._ubd_pos = list()
 
     def _ubd_cb(self, ubd):
-        if len(ubd.pos_x) > 0:
-            self._ubd_pos = zip(ubd.pos_x, ubd.pos_y, ubd.width, ubd.height)
+        # if len(ubd.pos_x) > 0:
+        self._ubd_pos = zip(ubd.pos_x, ubd.pos_y, ubd.width, ubd.height)
 
     def _img_cb(self, msg):
         try:
