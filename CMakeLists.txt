@@ -5,12 +5,12 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
   actionlib
-  actionlib_msgs
+  scitos_ptu
   sensor_msgs
-  scitos_msgs
   mongodb_store
+  geometry_msgs
   message_generation
-  strands_navigation_msgs
+  upper_body_detector 
 )
 
 catkin_python_setup()
@@ -30,15 +30,16 @@ add_message_files(
 #   Service2.srv
 # )
 
-add_action_files(
-  DIRECTORY action
-  FILES ChangeDetection.action
-)
+# add_action_files(
+#   DIRECTORY action
+#   FILES ChangeDetection.action
+# )
 
 generate_messages(
   DEPENDENCIES
   std_msgs
-  actionlib_msgs
+  sensor_msgs
+  geometry_msgs
 )
 
 ###################################
@@ -51,12 +52,12 @@ catkin_package(
   rospy 
   std_msgs
   actionlib
-  actionlib_msgs
+  scitos_ptu
   sensor_msgs 
-  scitos_msgs
+  geometry_msgs
   mongodb_store
   message_runtime
-  strands_navigation_msgs
+  upper_body_detector 
 #  DEPENDS system_lib
 )
 

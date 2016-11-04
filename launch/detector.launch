@@ -1,0 +1,16 @@
+<launch>
+    <arg name="img_topic" default="/head_xtion/rgb/image_raw"/>
+    <arg name="centroid_history_size" default="20"/>
+    <arg name="wait_time" default="5"/>
+
+    <arg name="machine" default="localhost" />
+    <arg name="user" default="" />
+
+    <machine name="$(arg machine)" address="$(arg machine)" env-loader="$(optenv ROS_ENV_LOADER )" user="$(arg user)" default="true"/>
+
+    <node pkg="simple_change_detector" type="detector.py" name="change_detection" output="screen">
+        <param name="img_topic" value="$(arg img_topic)" type="string"/>
+        <param name="centroid_history_size" value="$(arg centroid_history_size)" type="int"/>
+        <param name="wait_time" value="$(arg wait_time)" type="int"/>
+    </node>
+</launch>

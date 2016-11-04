@@ -1,6 +1,5 @@
 std_msgs/Header header
-string topological_node
-bool has_changed
-float32[] has_changed_percentages
-bool is_changing
-float32[] is_changing_percentages 
+geometry_msgs/Pose robot_pose 
+sensor_msgs/JointState ptu
+geometry_msgs/Point[] object_centroids   # only use x and y 
+float64[] object_area
