@@ -112,8 +112,11 @@ class ShiftingContour(object):
         # adding new centroids to centroid history
         tmp = list()
         for cnt in contours:
-            if cnt in exceptional_contours:
-                continue
+            try:
+                if cnt in exceptional_contours:
+                    continue
+            except ValueError as e:
+                rospy.logerr(e)
             too_close = False
             for cntr in self._centroid_history.values():
                 if euclidean(cnt[2], cntr[1]) < self._min_dist:
