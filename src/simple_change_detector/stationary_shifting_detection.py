@@ -3,10 +3,12 @@
 import copy
 import rospy
 import argparse
+import actionlib
 from std_msgs.msg import Header
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Pose, Point
 from scipy.spatial.distance import euclidean
+from scitos_ptu.msg import PtuGotoAction, PtuGotoGoal
 from mongodb_store.message_store import MessageStoreProxy
 from simple_change_detector.msg import ChangeDetectionMsg
 from simple_change_detector.shifting_contour import ShiftingContour
@@ -29,6 +31,9 @@ class StationaryShiftingDetection(object):
         self._ptu_counter = 0
         self._is_ptu_changing = [True for i in range(wait_time)]
         rospy.Subscriber("/ptu/state", JointState, self._ptu_cb, None, 1)
+        self._ptu_client = actionlib.SimpleActionClient('SetPTUState', PtuGotoAction)
+        rospy.loginfo("Wait for PTU action server")
+        self._ptu_client.wait_for_server(rospy.Duration(60))
         rospy.loginfo("Subcribe to /robot_pose...")
         self._robot_pose = Pose()
         self._robot_pose_counter = 0
@@ -75,6 +80,8 @@ class StationaryShiftingDetection(object):
         while not rospy.is_shutdown():
             if True not in self._is_robot_moving and True not in self._is_ptu_changing:
                 if not self._is_publishing:
+                    self._ptu_client.send_goal(PtuGotoGoal(0, 15, 30, 30))
+                    self._ptu_client.wait_for_result(rospy.Duration(5, 0))
                     rospy.loginfo(
                         "Robot has not been moving for a while, start detection in %d seconds" % self._wait_time
                     )

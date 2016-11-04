@@ -4,6 +4,8 @@ project(simple_change_detector)
 find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
+  actionlib
+  scitos_ptu
   sensor_msgs
   mongodb_store
   geometry_msgs
@@ -49,6 +51,8 @@ catkin_package(
   CATKIN_DEPENDS
   rospy 
   std_msgs
+  actionlib
+  scitos_ptu
   sensor_msgs 
   geometry_msgs
   mongodb_store
