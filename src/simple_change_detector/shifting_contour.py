@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
 import cv2
-import math
 import rospy
 import argparse
 import numpy as np
@@ -9,82 +8,70 @@ from sensor_msgs.msg import Image
 from scipy.spatial.distance import euclidean
 from cv_bridge import CvBridge, CvBridgeError
 from upper_body_detector.msg import UpperBodyDetector
+from simple_change_detector.baseline import BaselineImage
 
 
 class ShiftingContour(object):
 
     def __init__(
         self, topic_img="/head_xtion/rgb/image_raw", min_dist=5, max_dist=100,
-        min_contour_area=1600, publish_contour=False, max_centroid_history_size=20
+        min_contour_area=900, publish_contour=False, sample_size=20
     ):
-        self._h_factor = 5
         self._min_dist = min_dist
         self._max_dist = max_dist
+        self._sample_size = sample_size
         self._min_contour_area = min_contour_area
-        self._max_centroid_history_size = max_centroid_history_size
         self.reset()
         self._bridge = CvBridge()
-        rospy.sleep(0.1)
         if publish_contour:
             tmp = topic_img.split("/")
             pub_topic = "/" + tmp[1] + "/" + tmp[2] + "/image_contour"
             self._pub = rospy.Publisher(pub_topic, Image, queue_size=10)
             rospy.Timer(rospy.Duration(0, 100000000), self._print_contours)
-        rospy.Subscriber(topic_img, Image, self._img_cb, None, 10)
-        rospy.Subscriber(
-            "/upper_body_detector/detections", UpperBodyDetector, self._ubd_cb, None, 10
-        )
+        rospy.Subscriber(topic_img, Image, self._img_cb, None, 2)
 
     def reset(self):
         # CONTOUR STUFF
         rospy.loginfo("Resetting all values...")
+        self._counter = 0
         self._img = None
+        self._img_color = None
         self.contours = list()
         self._contours = list()
         self._previous_contours = list()
         self._fgbg = cv2.BackgroundSubtractorMOG2()
-        # centroid stuff
-        self._counter = 0
-        self._centroid_history = dict()
-        # ubd stuff for excepting people from being ignored by contour
-        self._ubd_pos = list()
-
-    def _ubd_cb(self, ubd):
-        # if len(ubd.pos_x) > 0:
-        self._ubd_pos = zip(ubd.pos_x, ubd.pos_y, ubd.width, ubd.height)
+        # baseline image stuff
+        self._base = BaselineImage(sample_size=self._sample_size)
 
     def _img_cb(self, msg):
         try:
-            img = self._bridge.imgmsg_to_cv2(msg)
-            self._img = self._img_substractor(img)
-            self._previous_contours = self._contours
-            self._contours = self._find_contours(self._img)
-            self.contours = self._find_shifting_contours(
-                self._contours, self._previous_contours
-            )
+            self._img_color = self._bridge.imgmsg_to_cv2(msg)
+            if self._base.baseline is not None:
+                self._img = self._img_substractor(self._img_color)
+                # self._previous_contours = self._contours
+                # self._contours = self._find_contours(self._img)
+                # self.contours = self._find_shifting_contours(
+                #     self._contours, self._previous_contours
+                # )
+                self.contours = self._find_contours(self._img)
+            else:
+                self._base.get_baseline(self._img_color)
         except CvBridgeError as e:
             rospy.logerr(e)
         rospy.sleep(0.05)
 
     def _img_substractor(self, img):
-        # remove noise with local means denoising (slow)
-        # if "depth" in self._pub.name.split("/"):
-        #     img = cv2.fastNlMeansDenoising(img, None, 10, 10, 7, 21)
-        # else:
-        #     img = cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)
+        if "depth" in self._pub.name.split("/"):
+            img = np.array(img, dtype=np.uint8)
+            # img = cv2.fastNlMeansDenoising(img, None, 10, 10, 7, 21)
+            blur = cv2.GaussianBlur(img, (5, 5), 0)
+            _, fgimg = cv2.threshold(
+                blur, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU
+            )
         fgimg = self._fgbg.apply(img)
-        # remove coloured noise
-        # fgimg = cv2.adaptiveThreshold(
-        #     fgimg, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        #     cv2.THRESH_BINARY, 11, 2
-        # )
-        # otsu binarization + gaussian filter threshold for BW img
-        blur = cv2.GaussianBlur(fgimg, (5, 5), 0)
-        _, fgimg = cv2.threshold(
-            blur, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU
-        )
-        # _, fgimg = cv2.threshold(fgimg, 127, 255, 0)  # std threshold
-        # fgimg = cv2.cvtColor(fgimg, cv2.COLOR_GRAY2BGR)  # color transformation
+        self._counter = (self._counter + 1) % self._sample_size
+        if self._counter == 0:
+            self._fgbg = cv2.BackgroundSubtractorMOG2()
         return fgimg
 
     def _find_contours(self, img):
@@ -98,36 +85,13 @@ class ShiftingContour(object):
                 # storing contour, its area, and its centroid
                 centroid = (int(m['m10']/m['m00']), int(m['m01']/m['m00']))
                 tmp.append((cnt, m['m00'], centroid))
-        contours = sorted(tmp, key=lambda i: i[1], reverse=True)[:5]
-        # contour exception for those inside ubd rect
-        exceptional_contours = list()
-        for cnt in contours:
-            # for pos in self._ubd_pos.values():
-            for pos in self._ubd_pos:
-                is_inside = pos[0] <= cnt[2][0] and cnt[2][0] <= pos[0]+pos[2]
-                is_inside = is_inside and pos[1] <= cnt[2][1]
-                is_inside = is_inside and cnt[2][1] <= pos[1]+(self._h_factor*pos[3])
-                if is_inside:
-                    exceptional_contours.append(cnt)
-        # adding new centroids to centroid history
-        tmp = list()
-        for cnt in contours:
-            try:
-                if cnt in exceptional_contours:
-                    continue
-            except ValueError as e:
-                rospy.logerr(e)
-            too_close = False
-            for cntr in self._centroid_history.values():
-                if euclidean(cnt[2], cntr[1]) < self._min_dist:
-                    too_close = True
-                    tmp.append(cnt)
-                    break
-            if not too_close and self._max_centroid_history_size > 0:
-                self._centroid_history.update({self._counter: (cnt[1], cnt[2])})
-                self._counter = (self._counter + 1) % self._max_centroid_history_size
-        if len(tmp) > 0:
-            contours = [cnt for cnt in contours if cnt[2] not in zip(*tmp)[2]]
+        contours = sorted(tmp, key=lambda i: i[1], reverse=True)
+        try:
+            contours = [
+                cnt for cnt in contours if self._base.is_contour_deviated(self._img_color, cnt[0])
+            ]
+        except TypeError as e:
+            rospy.logerr("Baseline has been reset, no value can be accessed!")
         return contours
 
     def _find_shifting_contours(self, contours, previous_contours):
@@ -166,10 +130,6 @@ class ShiftingContour(object):
         if len(self.contours) > 0:
             contours = zip(*self.contours)[0]
             cv2.drawContours(img, contours, -1, (0, 255, 0), 2)
-            # creating rectangle around the objects
-            # for cnt in zip(*self._previous_contours)[0]:
-            #     x, y, w, h = cv2.boundingRect(cnt)
-            #     cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 5)
         img = cv2.transform(img, np.array([[1, 1, 1]]))
         self._pub.publish(self._bridge.cv2_to_imgmsg(img))
 
@@ -181,8 +141,8 @@ if __name__ == '__main__':
         help="Image topic to subscribe to (default=/head_xtion/rgb/image_raw)"
     )
     parser_arg.add_argument(
-        "-c", dest="centroid_history_size", default="20",
-        help="Size of centroid history (default=20)"
+        "-s", dest="sample_size", default="20",
+        help="The number of sampling (default=20)"
     )
     args = parser_arg.parse_args()
     tmp = args.img_topic.split("/")
@@ -190,6 +150,6 @@ if __name__ == '__main__':
     rospy.init_node("shifting_contour_%s" % name)
     ShiftingContour(
         topic_img=args.img_topic, publish_contour=True,
-        max_centroid_history_size=int(args.centroid_history_size)
+        sample_size=int(args.sample_size)
     )
     rospy.spin()
