@@ -80,8 +80,10 @@ class StationaryShiftingDetection(object):
         while not rospy.is_shutdown():
             if True not in self._is_robot_moving and True not in self._is_ptu_changing:
                 if not self._is_publishing:
-                    self._ptu_client.send_goal(PtuGotoGoal(0, 15, 30, 30))
-                    self._ptu_client.wait_for_result(rospy.Duration(5, 0))
+                    if self._ptu.position[0] == 0.0 and self._ptu.position[1] == 0.0:
+                        rospy.loginfo("Tilting ptu a bit...")
+                        self._ptu_client.send_goal(PtuGotoGoal(0, 20, 30, 30))
+                        self._ptu_client.wait_for_result(rospy.Duration(5, 0))
                     rospy.loginfo(
                         "Robot has not been moving for a while, start detection in %d seconds" % self._wait_time
                     )
@@ -104,6 +106,8 @@ class StationaryShiftingDetection(object):
                         self._pub.publish(msg)
                         self._db.insert(msg)
             else:
+                self._ptu_client.send_goal(PtuGotoGoal(0, 0, 30, 30))
+                self._ptu_client.wait_for_result(rospy.Duration(5, 0))
                 self._is_publishing = False
             rospy.sleep(0.1)
 
