@@ -7,7 +7,6 @@ import numpy as np
 from sensor_msgs.msg import Image
 from scipy.spatial.distance import euclidean
 from cv_bridge import CvBridge, CvBridgeError
-from upper_body_detector.msg import UpperBodyDetector
 from simple_change_detector.baseline import BaselineImage
 
 
@@ -90,7 +89,7 @@ class ShiftingContour(object):
             contours = [
                 cnt for cnt in contours if self._base.is_contour_deviated(self._img_color, cnt[0])
             ]
-        except TypeError as e:
+        except TypeError:
             rospy.logerr("Baseline has been reset, no value can be accessed!")
         return contours
 

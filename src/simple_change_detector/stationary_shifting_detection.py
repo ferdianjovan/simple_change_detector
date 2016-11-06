@@ -4,27 +4,34 @@ import copy
 import rospy
 import argparse
 import actionlib
+from scipy.spatial.distance import euclidean
+
 from std_msgs.msg import Header
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Pose, Point
-from scipy.spatial.distance import euclidean
+
 from scitos_ptu.msg import PtuGotoAction, PtuGotoGoal
 from mongodb_store.message_store import MessageStoreProxy
+
 from simple_change_detector.msg import ChangeDetectionMsg
 from simple_change_detector.shifting_contour import ShiftingContour
+
+from region_observation.util import is_intersected
+from region_observation.util import robot_view_cone, get_soma_info
 
 
 class StationaryShiftingDetection(object):
 
     def __init__(
         self, topic_img="/head_xtion/rgb/image_raw",
-        sample_size=20, wait_time=5
+        sample_size=20, wait_time=5, soma_config=""
     ):
         # local vars
         self._counter = 0
         self._max_dist = 0.01
         self._wait_time = wait_time
         self.wait_time = rospy.Duration(wait_time)
+        # ptu
         rospy.loginfo("Subcribe to /ptu/state...")
         self._ptu = JointState()
         self._ptu.position = [0, 0]
@@ -36,15 +43,20 @@ class StationaryShiftingDetection(object):
         )
         rospy.loginfo("Wait for PTU action server")
         self._ptu_client.wait_for_server(rospy.Duration(60))
+        # robot pose
         rospy.loginfo("Subcribe to /robot_pose...")
         self._robot_pose = Pose()
         self._robot_pose_counter = 0
         self._is_robot_moving = [True for i in range(wait_time)]
         rospy.Subscriber("/robot_pose", Pose, self._robot_cb, None, 1)
+        # region
+        self.soma_config = soma_config
+        if soma_config != "":
+            self.regions, self.map = get_soma_info(soma_config)
+        # img
         self._img_contour = ShiftingContour(
             topic_img=topic_img, publish_contour=True, sample_size=sample_size
         )
-        # publishing stuff
         collection = rospy.get_name()[1:]
         self._db = MessageStoreProxy(collection=collection)
         self._pub = rospy.Publisher(
@@ -78,6 +90,7 @@ class StationaryShiftingDetection(object):
 
     def publish_shifting_message(self):
         while not rospy.is_shutdown():
+            roi = ""
             if True not in self._is_robot_moving and True not in self._is_ptu_changing:
                 if not self._is_publishing:
                     rospy.loginfo(
@@ -89,6 +102,8 @@ class StationaryShiftingDetection(object):
                     self._is_publishing = True
                     self._img_contour.reset()
                     rospy.sleep(self.wait_time)
+                    if self.soma_config != "":
+                        roi = self.get_region()
                 else:
                     contours = copy.deepcopy(self._img_contour.contours)
                     rospy.loginfo(
@@ -103,21 +118,39 @@ class StationaryShiftingDetection(object):
                         areas = list()
                         centroids = list()
                     self._counter += 1
+                    region_info = ["", "", ""]
+                    if self.soma_config != "":
+                        region_info = [self.map, self.soma_config, roi]
                     msg = ChangeDetectionMsg(
                         Header(self._counter, rospy.Time.now(), ''),
-                        self._robot_pose, self._ptu, centroids, areas
+                        self._robot_pose, self._ptu, centroids, areas,
+                        region_info
                     )
                     self._pub.publish(msg)
                     if len(contours) > 0:
                         self._db.insert(msg)
                     rospy.sleep(0.9)
             else:
+                roi = ""
                 self._is_publishing = False
             rospy.sleep(0.1)
+
+    def get_region(self):
+        roi = ""
+        area = 0.0
+        wp_sight, _ = robot_view_cone(
+            self._robot_pose, self._ptu.position[self._ptu.name.index('pan')]
+        )
+        for roi, region in self.regions.iteritems():
+            if area < wp_sight.intersection(region).area:
+                roi = roi
+                area = wp_sight.intersection(region).area
+        return roi
 
 
 if __name__ == '__main__':
     parser_arg = argparse.ArgumentParser(prog=rospy.get_name())
+    parser_arg.add_argument("soma_config", help="Soma configuration")
     parser_arg.add_argument(
         "-t", dest="img_topic", default="/head_xtion/rgb/image_raw",
         help="Image topic to subscribe to (default=/head_xtion/rgb/image_raw)"
@@ -136,7 +169,7 @@ if __name__ == '__main__':
     rospy.init_node("shifting_detection_%s" % name)
     ssd = StationaryShiftingDetection(
         topic_img=args.img_topic, sample_size=int(args.sample_size),
-        wait_time=int(args.wait_time)
+        wait_time=int(args.wait_time), soma_config=args.soma_config
     )
     ssd.publish_shifting_message()
     rospy.spin()
