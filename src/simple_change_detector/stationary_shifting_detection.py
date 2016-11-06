@@ -95,16 +95,20 @@ class StationaryShiftingDetection(object):
                         "%d object(s) are detected moving" % len(contours)
                     )
                     if len(contours) > 0:
-                        self._counter += 1
                         centroids = [
                             Point(i[2][0], i[2][1], 0) for i in contours
                         ]
                         areas = zip(*contours)[1]
-                        msg = ChangeDetectionMsg(
-                            Header(self._counter, rospy.Time.now(), ''),
-                            self._robot_pose, self._ptu, centroids, areas
-                        )
-                        self._pub.publish(msg)
+                    else:
+                        areas = list()
+                        centroids = list()
+                    self._counter += 1
+                    msg = ChangeDetectionMsg(
+                        Header(self._counter, rospy.Time.now(), ''),
+                        self._robot_pose, self._ptu, centroids, areas
+                    )
+                    self._pub.publish(msg)
+                    if len(contours) > 0:
                         self._db.insert(msg)
                     rospy.sleep(0.9)
             else:
