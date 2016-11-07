@@ -10,10 +10,8 @@ class DetectorManager(object):
         img_topic = rospy.get_param("~img_topic", "/head_xtion/rgb/image_raw")
         sample_size = rospy.get_param("~sample_size", 20)
         wait_time = rospy.get_param("~wait_time", 5)
-        soma_config = rospy.get_param("~soma_config", "")
         self.ssd = StationaryShiftingDetection(
-            topic_img=img_topic, sample_size=sample_size, wait_time=wait_time,
-            soma_config=soma_config
+            topic_img=img_topic, sample_size=sample_size, wait_time=wait_time
         )
         self.ssd.publish_shifting_message()
 

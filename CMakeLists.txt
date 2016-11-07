@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 2.8.3)
 project(simple_change_detector)
 
 find_package(catkin REQUIRED COMPONENTS
+  tf
   rospy
   std_msgs
   actionlib
@@ -10,7 +11,6 @@ find_package(catkin REQUIRED COMPONENTS
   mongodb_store
   geometry_msgs
   message_generation
-  region_observation
 )
 
 catkin_python_setup()
@@ -49,6 +49,7 @@ catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES simple_change_detector
   CATKIN_DEPENDS
+  tf
   rospy
   std_msgs
   actionlib
@@ -57,7 +58,6 @@ catkin_package(
   mongodb_store
   geometry_msgs
   message_runtime
-  region_observation
 #  DEPENDS system_lib
 )
 

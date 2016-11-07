@@ -4,9 +4,11 @@ import cv2
 import rospy
 import argparse
 import numpy as np
-from sensor_msgs.msg import Image
+import message_filters
 from scipy.spatial.distance import euclidean
 from cv_bridge import CvBridge, CvBridgeError
+from sensor_msgs.msg import Image, PointCloud2
+from sensor_msgs.point_cloud2 import read_points
 from simple_change_detector.baseline import BaselineImage
 
 
@@ -27,7 +29,13 @@ class ShiftingContour(object):
             pub_topic = "/" + tmp[1] + "/" + tmp[2] + "/image_contour"
             self._pub = rospy.Publisher(pub_topic, Image, queue_size=10)
             rospy.Timer(rospy.Duration(0, 100000000), self._print_contours)
-        rospy.Subscriber(topic_img, Image, self._img_cb, None, 2)
+        tmp = topic_img.split("/")
+        subs = [
+            message_filters.Subscriber(topic_img, Image),
+            message_filters.Subscriber(tmp[1]+"/depth/points", PointCloud2)
+        ]
+        ts = message_filters.ApproximateTimeSynchronizer(subs, queue_size=5, slop=0.15)
+        ts.registerCallback(self._img_cb)
 
     def reset(self):
         # CONTOUR STUFF
@@ -35,6 +43,7 @@ class ShiftingContour(object):
         self._counter = 0
         self._img = None
         self._img_color = None
+        self._depth = None
         self.contours = list()
         self._contours = list()
         self._previous_contours = list()
@@ -42,16 +51,15 @@ class ShiftingContour(object):
         # baseline image stuff
         self._base = BaselineImage(sample_size=self._sample_size)
 
-    def _img_cb(self, msg):
+    def _img_cb(self, img, depth):
         try:
-            self._img_color = self._bridge.imgmsg_to_cv2(msg)
+            self._img_color = self._bridge.imgmsg_to_cv2(img)
+            self._depth = [i for i in read_points(depth, field_names=("x", "y", "z"))]
+            self._depth = np.array(self._depth, dtype="float").reshape(
+                depth.height, depth.width, 3
+            )
             if self._base.baseline is not None:
                 self._img = self._img_substractor(self._img_color)
-                # self._previous_contours = self._contours
-                # self._contours = self._find_contours(self._img)
-                # self.contours = self._find_shifting_contours(
-                #     self._contours, self._previous_contours
-                # )
                 self.contours = self._find_contours(self._img)
             else:
                 self._base.get_baseline(self._img_color)
@@ -60,13 +68,13 @@ class ShiftingContour(object):
         rospy.sleep(0.05)
 
     def _img_substractor(self, img):
-        if "depth" in self._pub.name.split("/"):
-            img = np.array(img, dtype=np.uint8)
-            # img = cv2.fastNlMeansDenoising(img, None, 10, 10, 7, 21)
-            blur = cv2.GaussianBlur(img, (5, 5), 0)
-            _, fgimg = cv2.threshold(
-                blur, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU
-            )
+        # if "depth" in self._pub.name.split("/"):
+        #     img = np.array(img, dtype=np.uint8)
+        #     # img = cv2.fastNlMeansDenoising(img, None, 10, 10, 7, 21)
+        #     blur = cv2.GaussianBlur(img, (5, 5), 0)
+        #     _, fgimg = cv2.threshold(
+        #         blur, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU
+        #     )
         fgimg = self._fgbg.apply(img)
         self._counter = (self._counter + 1) % self._sample_size
         if self._counter == 0:
@@ -81,10 +89,11 @@ class ShiftingContour(object):
         for cnt in contours:
             m = cv2.moments(cnt)
             if m['m00'] > self._min_contour_area:  # area greater than 30 x 30 pixels
-                # storing contour, its area, and its centroid
+                # storing contour, its area, and its centroid on depth
                 centroid = (int(m['m10']/m['m00']), int(m['m01']/m['m00']))
-                tmp.append((cnt, m['m00'], centroid))
-        contours = sorted(tmp, key=lambda i: i[1], reverse=True)
+                centroid = self._depth[centroid[1], centroid[0]]
+                tmp.append((cnt, centroid))
+        contours = tmp
         try:
             contours = [
                 cnt for cnt in contours if self._base.is_contour_deviated(self._img_color, cnt[0])
@@ -92,30 +101,6 @@ class ShiftingContour(object):
         except TypeError:
             rospy.logerr("Baseline has been reset, no value can be accessed!")
         return contours
-
-    def _find_shifting_contours(self, contours, previous_contours):
-        shifting_contours = list()
-        if len(previous_contours) > 0 and len(contours) > 0:
-            nearest = self._get_nearest_contours(contours, previous_contours)
-            if len(nearest) > 0:
-                shifting_contours = zip(*nearest)[0]
-        return shifting_contours
-
-    def _get_nearest_contours(self, contours1, contours2):
-        # comparing two sets of contours if there is a movement
-        # returning a pair of closest contours (contours1, contours2)
-        nearest_contours = list()
-        for cnt1 in contours1:
-            closest = None
-            for cnt2 in contours2:
-                dist = euclidean(cnt1[2], cnt2[2])
-                if self._min_dist <= dist and dist <= self._max_dist:
-                    if closest is None or dist < euclidean(cnt1[2], closest[2]):
-                        closest = cnt2
-            if closest is not None:
-                nearest_contours.append((cnt1, closest))
-        nearest_contours = sorted(nearest_contours, key=lambda i: i[0][1], reverse=True)
-        return nearest_contours
 
     def _print_contours(self, event):
         if self._img is None:
