@@ -89,8 +89,8 @@ class StationaryShiftingDetection(object):
         rospy.sleep(1)
 
     def publish_shifting_message(self):
+        roi = ""
         while not rospy.is_shutdown():
-            roi = ""
             if True not in self._is_robot_moving and True not in self._is_ptu_changing:
                 if not self._is_publishing:
                     rospy.loginfo(
