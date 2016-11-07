@@ -97,7 +97,7 @@ class StationaryShiftingDetection(object):
                         "Robot has not been moving for a while, start detection in %d seconds" % self._wait_time
                     )
                     if self._ptu.position[0] == 0.0 and self._ptu.position[1] == 0.0:
-                        self._ptu_client.send_goal(PtuGotoGoal(0, 20, 30, 30))
+                        self._ptu_client.send_goal(PtuGotoGoal(0, 15, 30, 30))
                         self._ptu_client.wait_for_result(rospy.Duration(5, 0))
                     self._is_publishing = True
                     self._img_contour.reset()
@@ -136,16 +136,16 @@ class StationaryShiftingDetection(object):
             rospy.sleep(0.1)
 
     def get_region(self):
-        roi = ""
+        intersected_roi = ""
         area = 0.0
         wp_sight, _ = robot_view_cone(
             self._robot_pose, self._ptu.position[self._ptu.name.index('pan')]
         )
         for roi, region in self.regions.iteritems():
             if area < wp_sight.intersection(region).area:
-                roi = roi
+                intersected_roi = roi
                 area = wp_sight.intersection(region).area
-        return roi
+        return intersected_roi
 
 
 if __name__ == '__main__':
