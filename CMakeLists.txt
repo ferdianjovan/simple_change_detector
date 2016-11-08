@@ -11,6 +11,7 @@ find_package(catkin REQUIRED COMPONENTS
   mongodb_store
   geometry_msgs
   message_generation
+  visualization_msgs
 )
 
 catkin_python_setup()
@@ -58,6 +59,7 @@ catkin_package(
   mongodb_store
   geometry_msgs
   message_runtime
+  visualization_msgs
 #  DEPENDS system_lib
 )
 

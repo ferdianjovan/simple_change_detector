@@ -12,6 +12,7 @@ from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Pose, Point
 from sensor_msgs.point_cloud2 import read_points
 from tf.transformations import euler_from_quaternion
+from visualization_msgs.msg import Marker, MarkerArray
 
 from scitos_ptu.msg import PtuGotoAction, PtuGotoGoal
 from mongodb_store.message_store import MessageStoreProxy
@@ -23,7 +24,8 @@ from simple_change_detector.shifting_contour import ShiftingContour
 class StationaryShiftingDetection(object):
 
     def __init__(
-        self, topic_img="/head_xtion/rgb/image_raw", sample_size=20, wait_time=5
+        self, topic_img="/head_xtion/rgb/image_raw", sample_size=20,
+        wait_time=5, publish_image=True
     ):
         # local vars
         self._counter = 0
@@ -49,12 +51,16 @@ class StationaryShiftingDetection(object):
         rospy.Subscriber("/robot_pose", Pose, self._robot_cb, None, 1)
         # img
         self._img_contour = ShiftingContour(
-            topic_img=topic_img, publish_contour=True, sample_size=sample_size
+            topic_img=topic_img, publish_contour=publish_image,
+            sample_size=sample_size
         )
         collection = rospy.get_name()[1:]
         self._db = MessageStoreProxy(collection=collection)
         self._pub = rospy.Publisher(
             rospy.get_name()+"/detections", ChangeDetectionMsg, queue_size=10
+        )
+        self._pub_marker = rospy.Publisher(
+            rospy.get_name()+"/marker", MarkerArray, queue_size=10
         )
         self._is_publishing = False
 
@@ -88,19 +94,16 @@ class StationaryShiftingDetection(object):
         while not rospy.is_shutdown():
             if True not in (self._is_robot_moving+self._is_ptu_changing):
                 if not self._is_publishing:
-                    if self._img_contour._pause:
-                        self._img_contour.stop_play()
+                    if self._ptu.position == [0.0, 0.0]:
+                        self._ptu_client.send_goal(PtuGotoGoal(0, 15, 30, 30))
+                        self._ptu_client.wait_for_result(rospy.Duration(5))
+                    self._img_contour._pause = False
                     rospy.loginfo(
                         "Robot has not been moving for a while..."
                     )
                     rospy.loginfo(
                         "Start detection in %d seconds" % self._wait_time
                     )
-                    if self._ptu.position[0] == 0.0 and (
-                        self._ptu.position[1] == 0.0
-                    ):
-                        self._ptu_client.send_goal(PtuGotoGoal(0, 15, 30, 30))
-                        self._ptu_client.wait_for_result(rospy.Duration(5, 0))
                     self._is_publishing = True
                     self._img_contour.reset()
                     while self._img_contour._base.baseline is None:
@@ -110,41 +113,65 @@ class StationaryShiftingDetection(object):
                     rospy.loginfo(
                         "%d object(s) are detected moving" % len(contours)
                     )
-                    centroids = list()
-                    depth = [
-                        i for i in read_points(
-                            self._img_contour._depth,
-                            field_names=("x", "y", "z")
-                        )
-                    ]
-                    depth = np.array(depth, dtype="float").reshape(
-                        self._img_contour._depth.height,
-                        self._img_contour._depth.width, 3
-                    )
-                    for i in contours:
-                        centroid = depth[i[1][1], i[1][0]]
-                        if True in np.isnan(centroid):
-                            rospy.loginfo("Reflective object, ignore...")
-                            continue
-                        centroid = self.convert_to_world_frame(
-                            Point(centroid[0], centroid[1], centroid[2]),
-                            self._robot_pose, self._ptu
-                        )
-                        centroids.append(centroid)
+                    centroids = self._get_centroid_on_map_frame(contours)
                     self._counter += 1
                     msg = ChangeDetectionMsg(
                         Header(self._counter, rospy.Time.now(), ''),
                         self._robot_pose, self._ptu, centroids
                     )
                     self._pub.publish(msg)
-                    if len(contours) > 0:
+                    if len(centroids) > 0 or (rospy.Time.now().secs % 60 == 0):
                         self._db.insert(msg)
-                    rospy.sleep(0.1)
+                        self._draw_detections(centroids)
             else:
-                if not self._img_contour._pause:
-                    self._img_contour.stop_play()
+                self._img_contour._pause = True
                 self._is_publishing = False
             rospy.sleep(0.1)
+
+    def _draw_detections(self, centroids):
+        if len(centroids) > 0:
+            markers = MarkerArray()
+            for ind, centroid in enumerate(centroids):
+                marker = Marker()
+                marker.header.frame_id = "/map"
+                marker.header.stamp = rospy.Time.now()
+                marker.ns = "change_detection_markers"
+                marker.action = Marker.ADD
+                marker.pose.position = centroid
+                marker.pose.orientation.w = 1.0
+                marker.id = ind
+                marker.type = Marker.SPHERE
+                marker.scale.x = 0.5
+                marker.scale.y = 0.5
+                marker.color.a = 1.0
+                marker.color.b = 1.0
+                marker.color.g = 1.0
+                markers.markers.append(marker)
+            self._pub_marker.publish(markers)
+
+    def _get_centroid_on_map_frame(self, contours):
+        centroids = list()
+        depth = [
+            i for i in read_points(
+                self._img_contour._depth,
+                field_names=("x", "y", "z")
+            )
+        ]
+        depth = np.array(depth, dtype="float").reshape(
+            self._img_contour._depth.height,
+            self._img_contour._depth.width, 3
+        )
+        for i in contours:
+            centroid = depth[i[1][1], i[1][0]]
+            if True in np.isnan(centroid):
+                rospy.loginfo("Reflective object, ignore...")
+                continue
+            centroid = self.convert_to_world_frame(
+                Point(centroid[0], centroid[1], centroid[2]),
+                self._robot_pose, self._ptu
+            )
+            centroids.append(centroid)
+        return centroids
 
     # @PDuckworth's code
     def convert_to_world_frame(self, point, robot_pose, ptu):

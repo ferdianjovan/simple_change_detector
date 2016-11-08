@@ -52,9 +52,6 @@ class ShiftingContour(object):
         # baseline image stuff
         self._base = BaselineImage(sample_size=self._sample_size)
 
-    def stop_play(self):
-        self._pause = not self._pause
-
     def _img_cb(self, img, depth):
         if not self._pause:
             try:
@@ -121,7 +118,6 @@ class ShiftingContour(object):
                 cv2.drawContours(img, contours, -1, (0, 255, 0), 2)
             img = cv2.transform(img, np.array([[1, 1, 1]]))
             self._pub.publish(self._bridge.cv2_to_imgmsg(img))
-        rospy.sleep(0.1)
 
 
 if __name__ == '__main__':
