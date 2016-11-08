@@ -63,6 +63,8 @@ class StationaryShiftingDetection(object):
             rospy.get_name()+"/marker", MarkerArray, queue_size=10
         )
         self._is_publishing = False
+        self.detection = ChangeDetectionMsg()
+        rospy.Timer(rospy.Duration(1), self.publish_detections)
 
     def _ptu_cb(self, ptu):
         dist = euclidean(ptu.position, self._ptu.position)
@@ -115,39 +117,52 @@ class StationaryShiftingDetection(object):
                     )
                     centroids = self._get_centroid_on_map_frame(contours)
                     self._counter += 1
-                    msg = ChangeDetectionMsg(
+                    self.detection = ChangeDetectionMsg(
                         Header(self._counter, rospy.Time.now(), ''),
                         self._robot_pose, self._ptu, centroids
                     )
-                    self._pub.publish(msg)
-                    if len(centroids) > 0 or (rospy.Time.now().secs % 60 == 0):
-                        self._db.insert(msg)
-                        self._draw_detections(centroids)
+                    self._draw_detections(centroids)
             else:
                 self._img_contour._pause = True
                 self._is_publishing = False
             rospy.sleep(0.1)
 
+    def publish_detections(self, event):
+        if self._is_publishing:
+            self._pub.publish(self.detection)
+            if len(self.detection.object_centroids) > 0:
+                self._db.insert(self.detection)
+
     def _draw_detections(self, centroids):
-        if len(centroids) > 0:
-            markers = MarkerArray()
-            for ind, centroid in enumerate(centroids):
+        markers = MarkerArray()
+        for ind, centroid in enumerate(centroids):
+            marker = Marker()
+            marker.header.frame_id = "/map"
+            marker.header.stamp = rospy.Time.now()
+            marker.ns = "change_detection_markers"
+            marker.action = Marker.ADD
+            marker.pose.position = centroid
+            marker.pose.orientation.w = 1.0
+            marker.id = ind
+            marker.type = Marker.SPHERE
+            marker.scale.x = 0.2
+            marker.scale.y = 0.2
+            marker.scale.z = 0.2
+            marker.color.a = 1.0
+            marker.color.b = 1.0
+            markers.markers.append(marker)
+        if len(centroids) == 0:
+            for ind in range(10):
                 marker = Marker()
                 marker.header.frame_id = "/map"
                 marker.header.stamp = rospy.Time.now()
                 marker.ns = "change_detection_markers"
-                marker.action = Marker.ADD
-                marker.pose.position = centroid
-                marker.pose.orientation.w = 1.0
+                marker.action = Marker.DELETE
                 marker.id = ind
                 marker.type = Marker.SPHERE
-                marker.scale.x = 0.5
-                marker.scale.y = 0.5
-                marker.color.a = 1.0
-                marker.color.b = 1.0
-                marker.color.g = 1.0
+                marker.color.a = 0.0
                 markers.markers.append(marker)
-            self._pub_marker.publish(markers)
+        self._pub_marker.publish(markers)
 
     def _get_centroid_on_map_frame(self, contours):
         centroids = list()

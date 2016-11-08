@@ -27,14 +27,14 @@ class ShiftingContour(object):
             tmp = topic_img.split("/")
             pub_topic = "/" + tmp[1] + "/" + tmp[2] + "/image_contour"
             self._pub = rospy.Publisher(pub_topic, Image, queue_size=10)
-            rospy.Timer(rospy.Duration(0, 100000000), self._print_contours)
+            rospy.Timer(rospy.Duration(0, 50000000), self._print_contours)
         tmp = topic_img.split("/")
         subs = [
             message_filters.Subscriber(topic_img, Image),
             message_filters.Subscriber(tmp[1]+"/depth/points", PointCloud2)
         ]
         ts = message_filters.ApproximateTimeSynchronizer(
-            subs, queue_size=5, slop=0.15
+            subs, queue_size=1, slop=0.15
         )
         ts.registerCallback(self._img_cb)
 
