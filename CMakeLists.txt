@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 2.8.3)
 project(simple_change_detector)
 
 find_package(catkin REQUIRED COMPONENTS
+  tf
   rospy
   std_msgs
   actionlib
@@ -10,7 +11,7 @@ find_package(catkin REQUIRED COMPONENTS
   mongodb_store
   geometry_msgs
   message_generation
-  upper_body_detector 
+  visualization_msgs
 )
 
 catkin_python_setup()
@@ -26,8 +27,8 @@ add_message_files(
 
 # add_service_files(
 #   FILES
-#   Service1.srv
-#   Service2.srv
+#   ChangeEstimateSrv.srv
+#   ChangeBestTimeEstimate.srv
 # )
 
 # add_action_files(
@@ -49,15 +50,16 @@ catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES simple_change_detector
   CATKIN_DEPENDS
-  rospy 
+  tf
+  rospy
   std_msgs
   actionlib
   scitos_ptu
-  sensor_msgs 
-  geometry_msgs
+  sensor_msgs
   mongodb_store
+  geometry_msgs
   message_runtime
-  upper_body_detector 
+  visualization_msgs
 #  DEPENDS system_lib
 )
 

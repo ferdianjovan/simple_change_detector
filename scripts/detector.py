@@ -8,14 +8,14 @@ class DetectorManager(object):
 
     def __init__(self):
         img_topic = rospy.get_param("~img_topic", "/head_xtion/rgb/image_raw")
-        centroid_history_size = rospy.get_param("~centroid_history_size", 20)
+        sample_size = rospy.get_param("~sample_size", 20)
         wait_time = rospy.get_param("~wait_time", 5)
+        publish_image = rospy.get_param("~publish_image", True)
         self.ssd = StationaryShiftingDetection(
-            topic_img=img_topic, max_centroid_history_size=centroid_history_size,
-            wait_time=wait_time
+            topic_img=img_topic, sample_size=sample_size, wait_time=wait_time,
+            publish_image=publish_image
         )
         self.ssd.publish_shifting_message()
-        rospy.spin()
 
 
 if __name__ == '__main__':
@@ -23,3 +23,4 @@ if __name__ == '__main__':
     tmp = img_topic.split("/")
     rospy.init_node("%s_change_detection" % tmp[1])
     dm = DetectorManager()
+    rospy.spin()
