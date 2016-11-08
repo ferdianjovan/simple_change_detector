@@ -10,6 +10,7 @@ from scipy.spatial.distance import euclidean
 from std_msgs.msg import Header
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Pose, Point
+from sensor_msgs.point_cloud2 import read_points
 from tf.transformations import euler_from_quaternion
 
 from scitos_ptu.msg import PtuGotoAction, PtuGotoGoal
@@ -77,18 +78,27 @@ class StationaryShiftingDetection(object):
             ]
         )
         self._is_robot_moving[self._robot_pose_counter] = dist >= self._max_dist
-        self._robot_pose_counter = (self._robot_pose_counter+1) % self._wait_time
+        self._robot_pose_counter = (
+            self._robot_pose_counter+1
+        ) % self._wait_time
         self._robot_pose = pose
         rospy.sleep(1)
 
     def publish_shifting_message(self):
         while not rospy.is_shutdown():
-            if True not in self._is_robot_moving and True not in self._is_ptu_changing:
+            if True not in (self._is_robot_moving+self._is_ptu_changing):
                 if not self._is_publishing:
+                    if self._img_contour._pause:
+                        self._img_contour.stop_play()
                     rospy.loginfo(
-                        "Robot has not been moving for a while, start detection in %d seconds" % self._wait_time
+                        "Robot has not been moving for a while..."
                     )
-                    if self._ptu.position[0] == 0.0 and self._ptu.position[1] == 0.0:
+                    rospy.loginfo(
+                        "Start detection in %d seconds" % self._wait_time
+                    )
+                    if self._ptu.position[0] == 0.0 and (
+                        self._ptu.position[1] == 0.0
+                    ):
                         self._ptu_client.send_goal(PtuGotoGoal(0, 15, 30, 30))
                         self._ptu_client.wait_for_result(rospy.Duration(5, 0))
                     self._is_publishing = True
@@ -101,9 +111,23 @@ class StationaryShiftingDetection(object):
                         "%d object(s) are detected moving" % len(contours)
                     )
                     centroids = list()
+                    depth = [
+                        i for i in read_points(
+                            self._img_contour._depth,
+                            field_names=("x", "y", "z")
+                        )
+                    ]
+                    depth = np.array(depth, dtype="float").reshape(
+                        self._img_contour._depth.height,
+                        self._img_contour._depth.width, 3
+                    )
                     for i in contours:
+                        centroid = depth[i[1][1], i[1][0]]
+                        if True in np.isnan(centroid):
+                            rospy.loginfo("Reflective object, ignore...")
+                            continue
                         centroid = self.convert_to_world_frame(
-                            Point(i[1][0], i[1][1], i[1][2]),
+                            Point(centroid[0], centroid[1], centroid[2]),
                             self._robot_pose, self._ptu
                         )
                         centroids.append(centroid)
@@ -117,13 +141,17 @@ class StationaryShiftingDetection(object):
                         self._db.insert(msg)
                     rospy.sleep(0.1)
             else:
+                if not self._img_contour._pause:
+                    self._img_contour.stop_play()
                 self._is_publishing = False
             rospy.sleep(0.1)
 
     # @PDuckworth's code
     def convert_to_world_frame(self, point, robot_pose, ptu):
-        """Convert a single camera frame coordinate into a map frame coordinate"""
-        y,z,x = point.x, point.y, point.z
+        """
+            Convert a single camera frame coordinate into a map frame coordinate
+        """
+        y, z, x = point.x, point.y, point.z
 
         xr = robot_pose.position.x
         yr = robot_pose.position.y
@@ -150,17 +178,19 @@ class StationaryShiftingDetection(object):
         ])
         rot = rot_z*rot_y
 
-        pos_r = np.matrix([[xr], [yr], [zr+1.66]]) # robot's position in map frame
-        pos_p = np.matrix([[x], [-y], [-z]]) # person's position in camera frame
+        # robot's position in map frame
+        pos_r = np.matrix([[xr], [yr], [zr+1.66]])
+        # person's position in camera frame
+        pos_p = np.matrix([[x], [-y], [-z]])
+        # person's position in map frame
+        map_pos = rot * pos_p + pos_r
+        x_mf = map_pos[0, 0]
+        y_mf = map_pos[1, 0]
+        z_mf = map_pos[2, 0]
 
-        map_pos = rot*pos_p+pos_r # person's position in map frame
-        x_mf = map_pos[0,0]
-        y_mf = map_pos[1,0]
-        z_mf = map_pos[2,0]
-
-        print "_________"
-        print point
-        print ">>" , x_mf, y_mf, z_mf
+        # print "_________"
+        # print point
+        # print ">>", x_mf, y_mf, z_mf
         return Point(x_mf, y_mf, z_mf)
 
 

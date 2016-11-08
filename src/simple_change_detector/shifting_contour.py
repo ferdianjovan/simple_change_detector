@@ -5,10 +5,8 @@ import rospy
 import argparse
 import numpy as np
 import message_filters
-from scipy.spatial.distance import euclidean
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image, PointCloud2
-from sensor_msgs.point_cloud2 import read_points
 from simple_change_detector.baseline import BaselineImage
 
 
@@ -23,6 +21,7 @@ class ShiftingContour(object):
         self._sample_size = sample_size
         self._min_contour_area = min_contour_area
         self.reset()
+        self._pause = False
         self._bridge = CvBridge()
         if publish_contour:
             tmp = topic_img.split("/")
@@ -34,7 +33,9 @@ class ShiftingContour(object):
             message_filters.Subscriber(topic_img, Image),
             message_filters.Subscriber(tmp[1]+"/depth/points", PointCloud2)
         ]
-        ts = message_filters.ApproximateTimeSynchronizer(subs, queue_size=5, slop=0.15)
+        ts = message_filters.ApproximateTimeSynchronizer(
+            subs, queue_size=5, slop=0.15
+        )
         ts.registerCallback(self._img_cb)
 
     def reset(self):
@@ -51,21 +52,22 @@ class ShiftingContour(object):
         # baseline image stuff
         self._base = BaselineImage(sample_size=self._sample_size)
 
+    def stop_play(self):
+        self._pause = not self._pause
+
     def _img_cb(self, img, depth):
-        try:
-            self._img_color = self._bridge.imgmsg_to_cv2(img)
-            self._depth = [i for i in read_points(depth, field_names=("x", "y", "z"))]
-            self._depth = np.array(self._depth, dtype="float").reshape(
-                depth.height, depth.width, 3
-            )
-            if self._base.baseline is not None:
-                self._img = self._img_substractor(self._img_color)
-                self.contours = self._find_contours(self._img)
-            else:
-                self._base.get_baseline(self._img_color)
-        except CvBridgeError as e:
-            rospy.logerr(e)
-        rospy.sleep(0.05)
+        if not self._pause:
+            try:
+                self._img_color = self._bridge.imgmsg_to_cv2(img)
+                self._depth = depth
+                if self._base.baseline is not None:
+                    self._img = self._img_substractor(self._img_color)
+                    self.contours = self._find_contours(self._img)
+                else:
+                    self._base.get_baseline(self._img_color)
+            except CvBridgeError as e:
+                rospy.logerr(e)
+        rospy.sleep(0.1)
 
     def _img_substractor(self, img):
         # if "depth" in self._pub.name.split("/"):
@@ -88,34 +90,38 @@ class ShiftingContour(object):
         tmp = list()
         for cnt in contours:
             m = cv2.moments(cnt)
-            if m['m00'] > self._min_contour_area:  # area greater than 30 x 30 pixels
-                # storing contour, its area, and its centroid on depth
+            # area greater than 30 x 30 pixels
+            if m['m00'] > self._min_contour_area:
+                # storing contour, and its centroid on depth
                 centroid = (int(m['m10']/m['m00']), int(m['m01']/m['m00']))
-                centroid = self._depth[centroid[1], centroid[0]]
                 tmp.append((cnt, centroid))
         contours = tmp
         try:
             contours = [
-                cnt for cnt in contours if self._base.is_contour_deviated(self._img_color, cnt[0])
+                cnt for cnt in contours if self._base.is_contour_deviated(
+                    self._img_color, cnt[0]
+                )
             ]
         except TypeError:
             rospy.logerr("Baseline has been reset, no value can be accessed!")
         return contours
 
     def _print_contours(self, event):
-        if self._img is None:
-            return
-        # create black image
-        _, img = cv2.threshold(self._img, 255, 255, 0)
-        img = np.array(img, dtype=np.float32)
-        cv2.normalize(img, img, 0, 1, cv2.NORM_MINMAX)
-        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-        # adding contours
-        if len(self.contours) > 0:
-            contours = zip(*self.contours)[0]
-            cv2.drawContours(img, contours, -1, (0, 255, 0), 2)
-        img = cv2.transform(img, np.array([[1, 1, 1]]))
-        self._pub.publish(self._bridge.cv2_to_imgmsg(img))
+        if not self._pause:
+            if self._img is None:
+                return
+            # create black image
+            _, img = cv2.threshold(self._img, 255, 255, 0)
+            img = np.array(img, dtype=np.float32)
+            cv2.normalize(img, img, 0, 1, cv2.NORM_MINMAX)
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            # adding contours
+            if len(self.contours) > 0:
+                contours = zip(*self.contours)[0]
+                cv2.drawContours(img, contours, -1, (0, 255, 0), 2)
+            img = cv2.transform(img, np.array([[1, 1, 1]]))
+            self._pub.publish(self._bridge.cv2_to_imgmsg(img))
+        rospy.sleep(0.1)
 
 
 if __name__ == '__main__':
