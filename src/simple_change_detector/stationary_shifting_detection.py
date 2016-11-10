@@ -96,7 +96,7 @@ class StationaryShiftingDetection(object):
         while not rospy.is_shutdown():
             if True not in (self._is_robot_moving+self._is_ptu_changing):
                 if not self._is_publishing:
-                    if self._ptu.position == [0.0, 0.0]:
+                    if self._ptu.position[0] == 0.0 and self._ptu.position[1] == 0.0:
                         self._ptu_client.send_goal(PtuGotoGoal(0, 15, 30, 30))
                         self._ptu_client.wait_for_result(rospy.Duration(5))
                     self._img_contour._pause = False
