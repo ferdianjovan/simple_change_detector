@@ -25,8 +25,12 @@ class StationaryShiftingDetection(object):
 
     def __init__(
         self, topic_img="/head_xtion/rgb/image_raw", sample_size=20,
-        wait_time=5, publish_image=True
+        wait_time=5, publish_image=True, save_mode=False,
+        save_duration=rospy.Duration(10)
     ):
+        # save mode vars
+        self._save_mode = save_mode
+        self._save_dur = save_duration
         # local vars
         self._counter = 0
         self._max_dist = 0.1
@@ -93,7 +97,11 @@ class StationaryShiftingDetection(object):
         rospy.sleep(1)
 
     def publish_shifting_message(self):
+        start = rospy.Time.now()
+        end = rospy.Time.now()
         while not rospy.is_shutdown():
+            if self._save_mode:
+                end = rospy.Time.now()
             if True not in (self._is_robot_moving+self._is_ptu_changing):
                 if not self._is_publishing:
                     if self._ptu.position[0] == 0.0 and self._ptu.position[1] == 0.0:
@@ -110,12 +118,16 @@ class StationaryShiftingDetection(object):
                     self._img_contour.reset()
                     while self._img_contour._base.baseline is None:
                         rospy.sleep(0.1)
+                    start = rospy.Time.now()
+                elif (end-start) > self._save_dur:
+                    self._img_contour._pause = not self._img_contour._pause
+                    start = rospy.Time.now()
                 else:
-                    contours = copy.deepcopy(self._img_contour.contours)
-                    rospy.loginfo(
-                        "%d object(s) are detected moving" % len(contours)
-                    )
-                    centroids = self._get_centroid_on_map_frame(contours)
+                    if self._img_contour._pause:
+                        centroids = []
+                    else:
+                        contours = copy.deepcopy(self._img_contour.contours)
+                        centroids = self._get_centroid_on_map_frame(contours)
                     self._counter += 1
                     self.detection = ChangeDetectionMsg(
                         Header(self._counter, rospy.Time.now(), ''),
