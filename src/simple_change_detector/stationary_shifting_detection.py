@@ -14,6 +14,7 @@ from sensor_msgs.point_cloud2 import read_points
 from tf.transformations import euler_from_quaternion
 from visualization_msgs.msg import Marker, MarkerArray
 
+from strands_executive_msgs.srv import GetActiveTasks
 from scitos_ptu.msg import PtuGotoAction, PtuGotoGoal
 from mongodb_store.message_store import MessageStoreProxy
 
@@ -25,8 +26,23 @@ class StationaryShiftingDetection(object):
 
     def __init__(
         self, topic_img="/head_xtion/rgb/image_raw", sample_size=20,
-        wait_time=5, publish_image=True
+        wait_time=5, publish_image=True, save_mode=False,
+        save_duration=rospy.Duration(10),
+        non_interrupt_tasks=list()
     ):
+        # subscribe to active tasks if necessary
+        if non_interrupt_tasks == list() or non_interrupt_tasks[0] == "":
+            self._non_interrupt_tasks = list()
+            rospy.loginfo("Have control on PTU all the time...")
+        else:
+            self._active_tasks = rospy.ServiceProxy(
+                "/task_executor/get_active_tasks", GetActiveTasks
+            )
+            self._active_tasks.wait_for_service()
+            self._non_interrupt_tasks = non_interrupt_tasks
+        # save mode vars
+        self._save_mode = save_mode
+        self._save_dur = save_duration
         # local vars
         self._counter = 0
         self._max_dist = 0.1
@@ -66,6 +82,14 @@ class StationaryShiftingDetection(object):
         self.detection = ChangeDetectionMsg()
         rospy.Timer(rospy.Duration(1), self.publish_detections)
 
+    def reset_ptu_counter(self, value=False):
+        self._is_ptu_changing = [
+            value for i in range(len(self._is_ptu_changing))
+        ]
+        self._is_robot_moving = [
+            value for i in range(len(self._is_robot_moving))
+        ]
+
     def _ptu_cb(self, ptu):
         dist = euclidean(ptu.position, self._ptu.position)
         self._is_ptu_changing[self._ptu_counter] = dist >= self._max_dist
@@ -93,12 +117,14 @@ class StationaryShiftingDetection(object):
         rospy.sleep(1)
 
     def publish_shifting_message(self):
+        start = rospy.Time.now()
+        end = rospy.Time.now()
         while not rospy.is_shutdown():
+            if self._save_mode:
+                end = rospy.Time.now()
             if True not in (self._is_robot_moving+self._is_ptu_changing):
                 if not self._is_publishing:
-                    if self._ptu.position[0] == 0.0 and self._ptu.position[1] == 0.0:
-                        self._ptu_client.send_goal(PtuGotoGoal(0, 15, 30, 30))
-                        self._ptu_client.wait_for_result(rospy.Duration(5))
+                    self.tilting_ptu()
                     self._img_contour._pause = False
                     rospy.loginfo(
                         "Robot has not been moving for a while..."
@@ -110,12 +136,17 @@ class StationaryShiftingDetection(object):
                     self._img_contour.reset()
                     while self._img_contour._base.baseline is None:
                         rospy.sleep(0.1)
+                    self.reset_ptu_counter()
+                    start = rospy.Time.now()
+                elif (end-start) > self._save_dur:
+                    self._img_contour._pause = not self._img_contour._pause
+                    start = rospy.Time.now()
                 else:
-                    contours = copy.deepcopy(self._img_contour.contours)
-                    rospy.loginfo(
-                        "%d object(s) are detected moving" % len(contours)
-                    )
-                    centroids = self._get_centroid_on_map_frame(contours)
+                    if self._img_contour._pause:
+                        centroids = []
+                    else:
+                        contours = copy.deepcopy(self._img_contour.contours)
+                        centroids = self._get_centroid_on_map_frame(contours)
                     self._counter += 1
                     self.detection = ChangeDetectionMsg(
                         Header(self._counter, rospy.Time.now(), ''),
@@ -123,9 +154,27 @@ class StationaryShiftingDetection(object):
                     )
                     self._draw_detections(centroids)
             else:
+                self.tilting_ptu(False)
                 self._img_contour._pause = True
                 self._is_publishing = False
             rospy.sleep(0.1)
+
+    def tilting_ptu(self, is_robot_stationary=True):
+        non_interruption = False
+        if self._non_interrupt_tasks != list():
+            tasks = self._active_tasks()
+            tasks = [i.action for i in tasks.task]
+            for i in self._non_interrupt_tasks:
+                if i in tasks:
+                    non_interruption = True
+                    break
+        ptu_cond = self._ptu.position[0] == 0.0 and self._ptu.position[1] == 0.0
+        if not non_interruption and ptu_cond and is_robot_stationary:
+            self._ptu_client.send_goal(PtuGotoGoal(0, 15, 30, 30))
+            self._ptu_client.wait_for_result(rospy.Duration(5))
+        elif not non_interruption and not ptu_cond and not is_robot_stationary:
+            self._ptu_client.send_goal(PtuGotoGoal(0, 0, 30, 30))
+            self._ptu_client.wait_for_result(rospy.Duration(5))
 
     def publish_detections(self, event):
         if self._is_publishing:

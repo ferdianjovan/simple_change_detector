@@ -11,9 +11,16 @@ class DetectorManager(object):
         sample_size = rospy.get_param("~sample_size", 20)
         wait_time = rospy.get_param("~wait_time", 5)
         publish_image = rospy.get_param("~publish_image", True)
+        save_mode = rospy.get_param("~save_mode", False)
+        tmp = rospy.get_param("~non_interrupt_tasks", "")
+        tmp = tmp.replace(" ", "")
+        tmp = tmp.replace("[", "")
+        tmp = tmp.replace("]", "")
+        non_interrupt_tasks = tmp.split(",")
         self.ssd = StationaryShiftingDetection(
             topic_img=img_topic, sample_size=sample_size, wait_time=wait_time,
-            publish_image=publish_image
+            publish_image=publish_image, save_mode=save_mode,
+            non_interrupt_tasks=non_interrupt_tasks
         )
         self.ssd.publish_shifting_message()
 

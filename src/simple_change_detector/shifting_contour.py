@@ -58,27 +58,16 @@ class ShiftingContour(object):
                 self._img_color = self._bridge.imgmsg_to_cv2(img)
                 self._depth = depth
                 if self._base.baseline is not None:
-                    self._img = self._img_substractor(self._img_color)
+                    self._img = self._fgbg.apply(self._img_color)
+                    self._counter = (self._counter + 1) % self._sample_size
+                    if self._counter == 0:
+                        self._fgbg = cv2.BackgroundSubtractorMOG2()
                     self.contours = self._find_contours(self._img)
                 else:
                     self._base.get_baseline(self._img_color)
             except CvBridgeError as e:
                 rospy.logerr(e)
         rospy.sleep(0.1)
-
-    def _img_substractor(self, img):
-        # if "depth" in self._pub.name.split("/"):
-        #     img = np.array(img, dtype=np.uint8)
-        #     # img = cv2.fastNlMeansDenoising(img, None, 10, 10, 7, 21)
-        #     blur = cv2.GaussianBlur(img, (5, 5), 0)
-        #     _, fgimg = cv2.threshold(
-        #         blur, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU
-        #     )
-        fgimg = self._fgbg.apply(img)
-        self._counter = (self._counter + 1) % self._sample_size
-        if self._counter == 0:
-            self._fgbg = cv2.BackgroundSubtractorMOG2()
-        return fgimg
 
     def _find_contours(self, img):
         contours, _ = cv2.findContours(
