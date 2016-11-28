@@ -82,6 +82,14 @@ class StationaryShiftingDetection(object):
         self.detection = ChangeDetectionMsg()
         rospy.Timer(rospy.Duration(1), self.publish_detections)
 
+    def reset_ptu_counter(self, value=False):
+        self._is_ptu_changing = [
+            value for i in range(len(self._is_ptu_changing))
+        ]
+        self._is_robot_moving = [
+            value for i in range(len(self._is_robot_moving))
+        ]
+
     def _ptu_cb(self, ptu):
         dist = euclidean(ptu.position, self._ptu.position)
         self._is_ptu_changing[self._ptu_counter] = dist >= self._max_dist
@@ -128,6 +136,7 @@ class StationaryShiftingDetection(object):
                     self._img_contour.reset()
                     while self._img_contour._base.baseline is None:
                         rospy.sleep(0.1)
+                    self.reset_ptu_counter()
                     start = rospy.Time.now()
                 elif (end-start) > self._save_dur:
                     self._img_contour._pause = not self._img_contour._pause
