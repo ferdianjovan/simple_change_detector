@@ -14,6 +14,7 @@ from sensor_msgs.point_cloud2 import read_points
 from tf.transformations import euler_from_quaternion
 from visualization_msgs.msg import Marker, MarkerArray
 
+from strands_executive_msgs.srv import GetActiveTasks
 from scitos_ptu.msg import PtuGotoAction, PtuGotoGoal
 from mongodb_store.message_store import MessageStoreProxy
 
@@ -26,8 +27,19 @@ class StationaryShiftingDetection(object):
     def __init__(
         self, topic_img="/head_xtion/rgb/image_raw", sample_size=20,
         wait_time=5, publish_image=True, save_mode=False,
-        save_duration=rospy.Duration(10)
+        save_duration=rospy.Duration(10),
+        non_interrupt_tasks=list()
     ):
+        # subscribe to active tasks if necessary
+        if non_interrupt_tasks == list() or non_interrupt_tasks[0] == "":
+            self._non_interrupt_tasks = list()
+            rospy.loginfo("Have control on PTU all the time...")
+        else:
+            self._active_tasks = rospy.ServiceProxy(
+                "/task_executor/get_active_tasks", GetActiveTasks
+            )
+            self._active_tasks.wait_for_service()
+            self._non_interrupt_tasks = non_interrupt_tasks
         # save mode vars
         self._save_mode = save_mode
         self._save_dur = save_duration
@@ -104,9 +116,7 @@ class StationaryShiftingDetection(object):
                 end = rospy.Time.now()
             if True not in (self._is_robot_moving+self._is_ptu_changing):
                 if not self._is_publishing:
-                    if self._ptu.position[0] == 0.0 and self._ptu.position[1] == 0.0:
-                        self._ptu_client.send_goal(PtuGotoGoal(0, 15, 30, 30))
-                        self._ptu_client.wait_for_result(rospy.Duration(5))
+                    self.tilting_ptu()
                     self._img_contour._pause = False
                     rospy.loginfo(
                         "Robot has not been moving for a while..."
@@ -138,6 +148,20 @@ class StationaryShiftingDetection(object):
                 self._img_contour._pause = True
                 self._is_publishing = False
             rospy.sleep(0.1)
+
+    def tilting_ptu(self):
+        non_interruption = False
+        if self._non_interrupt_tasks != list():
+            tasks = self._active_tasks()
+            tasks = [i.action for i in tasks.task]
+            for i in self._non_interrupt_tasks:
+                if i in tasks:
+                    non_interruption = True
+                    break
+        ptu_cond = self._ptu.position[0] == 0.0 and self._ptu.position[1] == 0.0
+        if not non_interruption and ptu_cond:
+            self._ptu_client.send_goal(PtuGotoGoal(0, 15, 30, 30))
+            self._ptu_client.wait_for_result(rospy.Duration(5))
 
     def publish_detections(self, event):
         if self._is_publishing:

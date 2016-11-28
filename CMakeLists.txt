@@ -10,6 +10,7 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   mongodb_store
   geometry_msgs
+  strands_executive_msgs
   message_generation
   visualization_msgs
 )
@@ -60,6 +61,7 @@ catkin_package(
   geometry_msgs
   message_runtime
   visualization_msgs
+  strands_executive_msgs
 #  DEPENDS system_lib
 )
 
