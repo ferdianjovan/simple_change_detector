@@ -145,11 +145,12 @@ class StationaryShiftingDetection(object):
                     )
                     self._draw_detections(centroids)
             else:
+                self.tilting_ptu(False)
                 self._img_contour._pause = True
                 self._is_publishing = False
             rospy.sleep(0.1)
 
-    def tilting_ptu(self):
+    def tilting_ptu(self, is_robot_stationary=True):
         non_interruption = False
         if self._non_interrupt_tasks != list():
             tasks = self._active_tasks()
@@ -159,8 +160,11 @@ class StationaryShiftingDetection(object):
                     non_interruption = True
                     break
         ptu_cond = self._ptu.position[0] == 0.0 and self._ptu.position[1] == 0.0
-        if not non_interruption and ptu_cond:
+        if not non_interruption and ptu_cond and is_robot_stationary:
             self._ptu_client.send_goal(PtuGotoGoal(0, 15, 30, 30))
+            self._ptu_client.wait_for_result(rospy.Duration(5))
+        elif not non_interruption and not ptu_cond and not is_robot_stationary:
+            self._ptu_client.send_goal(PtuGotoGoal(0, 0, 30, 30))
             self._ptu_client.wait_for_result(rospy.Duration(5))
 
     def publish_detections(self, event):
