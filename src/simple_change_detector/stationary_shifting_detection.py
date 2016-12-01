@@ -28,18 +28,18 @@ class StationaryShiftingDetection(object):
         self, topic_img="/head_xtion/rgb/image_raw", sample_size=20,
         wait_time=5, publish_image=True, save_mode=False,
         save_duration=rospy.Duration(10),
-        non_interrupt_tasks=list()
+        interrupt_tasks=list()
     ):
         # subscribe to active tasks if necessary
-        if non_interrupt_tasks == list() or non_interrupt_tasks[0] == "":
-            self._non_interrupt_tasks = list()
+        if interrupt_tasks == list() or interrupt_tasks[0] == "":
+            self._interrupt_tasks = list()
             rospy.loginfo("Have control on PTU all the time...")
         else:
             self._active_tasks = rospy.ServiceProxy(
                 "/task_executor/get_active_tasks", GetActiveTasks
             )
             self._active_tasks.wait_for_service()
-            self._non_interrupt_tasks = non_interrupt_tasks
+            self._interrupt_tasks = interrupt_tasks
         # save mode vars
         self._save_mode = save_mode
         self._save_dur = save_duration
@@ -160,19 +160,24 @@ class StationaryShiftingDetection(object):
             rospy.sleep(0.1)
 
     def tilting_ptu(self, is_robot_stationary=True):
-        non_interruption = False
-        if self._non_interrupt_tasks != list():
+        interruption = True
+        if self._interrupt_tasks != list():
             tasks = self._active_tasks()
             tasks = [i.action for i in tasks.task]
-            for i in self._non_interrupt_tasks:
-                if i in tasks:
-                    non_interruption = True
+            for i in tasks:
+                if i not in self._interrupt_tasks:
+                    interruption = False
                     break
         ptu_cond = self._ptu.position[0] == 0.0 and self._ptu.position[1] == 0.0
-        if not non_interruption and ptu_cond and is_robot_stationary:
+        reset_cond = self._ptu.position[0] == 0.0 and (
+            self._ptu.position[1] >= (10/180.0 * np.pi) and (
+                self._ptu.position[1] <= (20/180.0 * np.pi)
+            )
+        )
+        if interruption and ptu_cond and is_robot_stationary:
             self._ptu_client.send_goal(PtuGotoGoal(0, 15, 30, 30))
             self._ptu_client.wait_for_result(rospy.Duration(5))
-        elif not non_interruption and not ptu_cond and not is_robot_stationary:
+        elif interruption and reset_cond and not is_robot_stationary:
             self._ptu_client.send_goal(PtuGotoGoal(0, 0, 30, 30))
             self._ptu_client.wait_for_result(rospy.Duration(5))
 
