@@ -168,6 +168,8 @@ class StationaryShiftingDetection(object):
                 if i not in self._interrupt_tasks:
                     interruption = False
                     break
+            if not len(tasks):
+                interruption = False
         ptu_cond = self._ptu.position[0] == 0.0 and self._ptu.position[1] == 0.0
         reset_cond = self._ptu.position[0] == 0.0 and (
             self._ptu.position[1] >= (10/180.0 * np.pi) and (
