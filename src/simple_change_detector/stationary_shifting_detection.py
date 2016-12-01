@@ -164,9 +164,9 @@ class StationaryShiftingDetection(object):
         if self._interrupt_tasks != list():
             try:
                 tasks = self._active_tasks()
+                tasks = [i.action for i in tasks.task]
             except rospy.service.ServiceException:
                 tasks = list()
-            tasks = [i.action for i in tasks.task]
             for i in tasks:
                 if i not in self._interrupt_tasks:
                     interruption = False
