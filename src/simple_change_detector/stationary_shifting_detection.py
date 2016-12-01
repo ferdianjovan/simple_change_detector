@@ -162,7 +162,10 @@ class StationaryShiftingDetection(object):
     def tilting_ptu(self, is_robot_stationary=True):
         interruption = True
         if self._interrupt_tasks != list():
-            tasks = self._active_tasks()
+            try:
+                tasks = self._active_tasks()
+            except rospy.service.ServiceException:
+                tasks = list()
             tasks = [i.action for i in tasks.task]
             for i in tasks:
                 if i not in self._interrupt_tasks:
